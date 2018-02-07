@@ -471,25 +471,6 @@ def ron_arg_scope(weight_decay=0.0005, data_format='NHWC'):
     Returns:
       An arg_scope.
     """
-    # with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.fully_connected],
-    #                     activation_fn=tf.nn.relu,
-    #                     weights_regularizer=slim.l2_regularizer(weight_decay),
-    #                     weights_initializer=tf.contrib.layers.xavier_initializer(),
-    #                     biases_initializer=tf.zeros_initializer()):
-    #     with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.max_pool2d],
-    #                         padding='SAME',
-    #                         data_format=data_format):
-    #         with slim.arg_scope([slim.batch_norm],
-    #                         activation_fn=tf.nn.relu,
-    #                         decay=0.997,
-    #                         epsilon=1e-5,
-    #                         scale=True,
-    #                         data_format=data_format):
-    #             with slim.arg_scope([custom_layers.pad2d,
-    #                                  custom_layers.l2_normalization,
-    #                                  custom_layers.channel_to_last],
-    #                                 data_format=data_format) as sc:
-    #                 return sc
     with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.fully_connected],
                         activation_fn=tf.nn.relu,
                         weights_regularizer=slim.l2_regularizer(weight_decay),

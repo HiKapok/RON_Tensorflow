@@ -12,7 +12,7 @@ update:
 - Add SSD preprocesing method using Tensorflow
 - Modify the network to match the original Caffe code
 - Add nms using Tensorflow ops to support two mode
-- Replica GPU training support
+- Replica GPU training support (If you are using Tensorflow 1.5.0+, then remove the replicate_model\_fn.py)
 - Add voc eval
 
-Note: Trainig is in process, and the model will be released later.
+Note: Training is in process, and the model will be released later.
