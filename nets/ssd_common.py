@@ -28,9 +28,9 @@ def tf_ssd_bboxes_encode_layer(labels,
                                num_classes,
                                no_annotation_label,
                                positive_threshold = 0.5,
-                               ignore_threshold=0.3,
-                               prior_scaling=[0.1, 0.1, 0.2, 0.2],
-                               dtype=tf.float32):
+                               ignore_threshold = 0.3,
+                               prior_scaling = [0.1, 0.1, 0.2, 0.2],
+                               dtype = tf.float32):
     """Encode groundtruth labels and bounding boxes using SSD anchors from
     one layer.
 
@@ -105,58 +105,6 @@ def tf_ssd_bboxes_encode_layer(labels,
         r = tf.less(i, tf.shape(labels))
         return r[0]
 
-    # def body(i, feat_labels, feat_scores,
-    #          feat_ymin, feat_xmin, feat_ymax, feat_xmax, max_mask):
-    #     """Body: update feature labels, scores and bboxes.
-    #     Follow the original SSD paper for that purpose:
-    #       - assign values when jaccard > 0.5;
-    #       - only update if beat the score of other bboxes.
-    #     """
-    #     # Jaccard score.
-    #     # get i_th groud_truth(label && bbox)
-    #     label = labels[i]
-    #     bbox = bboxes[i]
-    #     jaccard = jaccard_with_anchors(bbox)
-
-    #     max_jaccard = tf.reduce_max(jaccard)
-    #     # TODO: fix this bug
-    #     cur_max_mask = tf.equal(jaccard, max_jaccard)
-
-    #     # Mask: check threshold + scores + no annotations + num_classes.
-    #     # note: when jaccard score of this ground_truth is high than before overlap score, we will update this anchor
-    #     mask = tf.greater(jaccard, feat_scores)
-    #     # mask = tf.logical_and(mask, tf.greater(jaccard, matching_threshold))
-    #     # even if the score is update(high than last ground_truth), we won't use this unless score > 0.5
-    #     feat_scores = tf.where(mask, jaccard, feat_scores)
-    #     # all positions with current jaccard < positive_threshold, is considered background, so no need for labels (0) and regression target
-    #     mask = tf.logical_and(mask, feat_scores > positive_threshold)
-    #     # we don't update those anchor's jaccard is maximun with ground_truth in earlier loop
-    #     mask = tf.logical_and(mask, tf.logical_not(max_mask))
-    #     # we also update those anchor's jaccard is maximun with ground_truth
-    #     mask = tf.logical_or(mask, cur_max_mask)
-
-    #     mask = tf.logical_and(mask, label < num_classes)
-    #     imask = tf.cast(mask, tf.int64)
-    #     fmask = tf.cast(mask, dtype)
-    #     # Update values using mask.
-    #     feat_labels = imask * label + (1 - imask) * feat_labels
-    #     #feat_scores = tf.where(mask, jaccard, feat_scores)
-    #     # update ground truth for each anchors depends on the mask
-    #     feat_ymin = fmask * bbox[0] + (1 - fmask) * feat_ymin
-    #     feat_xmin = fmask * bbox[1] + (1 - fmask) * feat_xmin
-    #     feat_ymax = fmask * bbox[2] + (1 - fmask) * feat_ymax
-    #     feat_xmax = fmask * bbox[3] + (1 - fmask) * feat_xmax
-
-    #     max_mask = tf.logical_or(max_mask, cur_max_mask)
-    #     # Check no annotation label: ignore these anchors...
-    #     # interscts = intersection_with_anchors(bbox)
-    #     # mask = tf.logical_and(interscts > ignore_threshold,
-    #     #                       label == no_annotation_label)
-    #     # # Replace scores by -1.
-    #     # feat_scores = tf.where(mask, -tf.cast(mask, dtype), feat_scores)
-
-    #     return [i+1, feat_labels, feat_scores,
-    #             feat_ymin, feat_xmin, feat_ymax, feat_xmax, max_mask]
     def body(i, feat_labels, feat_scores,
              feat_ymin, feat_xmin, feat_ymax, feat_xmax, max_mask):
         """Body: update feature labels, scores and bboxes.
@@ -215,7 +163,9 @@ def tf_ssd_bboxes_encode_layer(labels,
      feat_ymax, feat_xmax, max_mask] = tf.while_loop(condition, body,
                                            [i, feat_labels, feat_scores,
                                             feat_ymin, feat_xmin,
-                                            feat_ymax, feat_xmax, max_mask])
+                                            feat_ymax, feat_xmax, max_mask], parallel_iterations=16,
+                                                                            back_prop=False,
+                                                                            swap_memory=True)
     # Transform to center / size.
     feat_cy = (feat_ymax + feat_ymin) / 2.
     feat_cx = (feat_xmax + feat_xmin) / 2.

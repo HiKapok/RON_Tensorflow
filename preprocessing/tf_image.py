@@ -69,22 +69,25 @@ def _is_tensor(x):
     return isinstance(x, (ops.Tensor, variables.Variable))
 
 
-def _ImageDimensions(image):
-    """Returns the dimensions of an image tensor.
-    Args:
-      image: A 3-D Tensor of shape `[height, width, channels]`.
-    Returns:
-      A list of `[height, width, channels]` corresponding to the dimensions of the
-        input image.  Dimensions that are statically known are python integers,
-        otherwise they are integer scalar tensors.
-    """
-    if image.get_shape().is_fully_defined():
-        return image.get_shape().as_list()
-    else:
-        static_shape = image.get_shape().with_rank(3).as_list()
-        dynamic_shape = array_ops.unstack(array_ops.shape(image), 3)
-        return [s if s is not None else d
-                for s, d in zip(static_shape, dynamic_shape)]
+def _ImageDimensions(image, rank = 3):
+  """Returns the dimensions of an image tensor.
+
+  Args:
+    image: A rank-D Tensor. For 3-D  of shape: `[height, width, channels]`.
+    rank: The expected rank of the image
+
+  Returns:
+    A list of corresponding to the dimensions of the
+    input image.  Dimensions that are statically known are python integers,
+    otherwise they are integer scalar tensors.
+  """
+  if image.get_shape().is_fully_defined():
+    return image.get_shape().as_list()
+  else:
+    static_shape = image.get_shape().with_rank(rank).as_list()
+    dynamic_shape = array_ops.unstack(array_ops.shape(image), rank)
+    return [s if s is not None else d
+            for s, d in zip(static_shape, dynamic_shape)]
 
 
 def _Check3DImage(image, require_static=True):
@@ -303,4 +306,170 @@ def random_flip_left_right(image, bboxes, seed=None):
                                        lambda: flip_bboxes(bboxes),
                                        lambda: bboxes)
         return fix_image_flip_shape(image, result), bboxes
+
+def ssd_random_sample_patch(image, labels, bboxes, name=None):
+    def sample_width_height(width, height):
+        index = 0
+        max_attempt = 5
+        sampled_width, sampled_height = width, height
+
+        def condition(index, sampled_width, sampled_height, width, height):
+            return tf.logical_or(tf.logical_and(tf.logical_or(tf.greater(sampled_width, sampled_height * 2), tf.greater(sampled_height, sampled_width * 2)), tf.less(index, max_attempt)), tf.less(index, 1))
+
+        def body(index, sampled_width, sampled_height, width, height):
+            sampled_width = tf.random_uniform([1], minval=0.1, maxval=0.999, dtype=tf.float32)[0] * width
+            sampled_height = tf.random_uniform([1], minval=0.1, maxval=0.999, dtype=tf.float32)[0] *height
+
+            return index+1, sampled_width, sampled_height, width, height
+
+        [index, sampled_width, sampled_height, _, _] = tf.while_loop(condition, body,
+                                           [index, sampled_width, sampled_height, width, height], parallel_iterations=5,
+                                                                                                back_prop=False,
+                                                                                                swap_memory=True)
+
+        return tf.cast(sampled_width, tf.int32), tf.cast(sampled_height, tf.int32)
+
+    def jaccard_with_anchors(roi, bboxes):
+        int_ymin = tf.maximum(roi[0], bboxes[:, 0])
+        int_xmin = tf.maximum(roi[1], bboxes[:, 1])
+        int_ymax = tf.minimum(roi[2], bboxes[:, 2])
+        int_xmax = tf.minimum(roi[3], bboxes[:, 3])
+        h = tf.maximum(int_ymax - int_ymin, 0.)
+        w = tf.maximum(int_xmax - int_xmin, 0.)
+        # Volumes.
+        inter_vol = h * w
+        union_vol = (roi[3] - roi[1]) * (roi[2] - roi[0]) + ((bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1]) - inter_vol)
+        jaccard = tf.div(inter_vol, union_vol)
+        return jaccard
+
+    def check_roi_center(width, height, labels, bboxes):
+        index = 0
+        max_attempt = 10
+        roi = [0., 0., 0., 0.]
+        float_width = tf.cast(width, tf.float32)
+        float_height = tf.cast(height, tf.float32)
+        mask = tf.cast(tf.zeros_like(labels, dtype=tf.uint8), tf.bool)
+        center_x, center_y = (bboxes[:, 1] + bboxes[:, 3]) / 2, (bboxes[:, 0] + bboxes[:, 2]) / 2
+
+        def condition(index, roi, mask):
+            return tf.logical_or(tf.logical_and(tf.reduce_sum(tf.cast(mask, tf.int32)) < 1, tf.less(index, max_attempt)), tf.less(index, 1))
+
+        def body(index, roi, mask):
+            sampled_width, sampled_height = sample_width_height(float_width, float_height)
+
+            x = tf.random_uniform([1], minval=0, maxval=width - sampled_width, dtype=tf.int32)[0]
+            y = tf.random_uniform([1], minval=0, maxval=height - sampled_height, dtype=tf.int32)[0]
+
+            roi = [tf.cast(y, tf.float32)/float_height, tf.cast(x, tf.float32)/float_width, tf.cast(y + sampled_height, tf.float32)/float_height, tf.cast(x + sampled_width, tf.float32)/float_width]
+
+            mask_min = tf.logical_and(tf.greater(center_y, roi[0]), tf.greater(center_x, roi[1]))
+            mask_max = tf.logical_and(tf.less(center_y, roi[2]), tf.less(center_x, roi[3]))
+            mask = tf.logical_and(mask_min, mask_max)
+
+            return index + 1, roi, mask
+
+        [index, roi, mask] = tf.while_loop(condition, body, [index, roi, mask], parallel_iterations=10,
+                                                                                back_prop=False,
+                                                                                swap_memory=True)
+
+        mask_labels = tf.boolean_mask(labels, mask)
+        mask_bboxes = tf.boolean_mask(bboxes, mask)
+
+        return roi, mask_labels, mask_bboxes
+    def check_roi_overlap(width, height, labels, bboxes, min_iou):
+        index = 0
+        max_attempt = 10
+        roi = [0., 0., 1., 1.]
+        mask_labels = labels
+        mask_bboxes = bboxes
+
+        def condition(index, roi, mask_labels, mask_bboxes):
+            return tf.logical_or(tf.logical_and(tf.reduce_sum(tf.cast(jaccard_with_anchors(roi, mask_bboxes) < min_iou, tf.int32)) > 0, tf.less(index, max_attempt)), tf.less(index, 1))
+
+        def body(index, roi, mask_labels, mask_bboxes):
+            roi, mask_labels, mask_bboxes = check_roi_center(width, height, labels, bboxes)
+            return index+1, roi, mask_labels, mask_bboxes
+
+        [index, roi, mask_labels, mask_bboxes] = tf.while_loop(condition, body,
+                                                                [index, roi, mask_labels, mask_bboxes],
+                                                                parallel_iterations=16,
+                                                                back_prop=False,
+                                                                swap_memory=True)
+
+        return tf.cast([roi[0]*tf.cast(height, tf.float32), roi[1]*tf.cast(width, tf.float32), (roi[2]-roi[0])*tf.cast(height, tf.float32), (roi[3]-roi[1])*tf.cast(width, tf.float32)], tf.int32), mask_labels, mask_bboxes
+
+    def sample_patch(image, labels, bboxes, min_iou):
+        if image.get_shape().ndims != 3:
+            raise ValueError('\'image\' must have 3 dimensions.')
+
+        height, width, depth = _ImageDimensions(image, rank=3)
+
+        roi_slice_range, mask_labels, mask_bboxes = check_roi_overlap(width, height, labels, bboxes, min_iou)
+
+        scale = tf.cast(tf.stack([height, width, height, width]), mask_bboxes.dtype)
+        mask_bboxes = mask_bboxes * scale
+
+        # Add offset.
+        offset = tf.cast(tf.stack([roi_slice_range[0], roi_slice_range[1], roi_slice_range[0], roi_slice_range[1]]), mask_bboxes.dtype)
+        mask_bboxes = mask_bboxes - offset
+
+        cliped_ymin = tf.maximum(0., mask_bboxes[:, 0])
+        cliped_xmin = tf.maximum(0., mask_bboxes[:, 1])
+        cliped_ymax = tf.minimum(tf.cast(roi_slice_range[2], tf.float32), mask_bboxes[:, 2])
+        cliped_xmax = tf.minimum(tf.cast(roi_slice_range[3], tf.float32), mask_bboxes[:, 3])
+
+        mask_bboxes = tf.stack([cliped_ymin, cliped_xmin, cliped_ymax, cliped_xmax], axis=-1)
+
+        # Rescale to target dimension.
+        scale = tf.cast(tf.stack([roi_slice_range[2], roi_slice_range[3],
+                                  roi_slice_range[2], roi_slice_range[3]]), mask_bboxes.dtype)
+
+        return control_flow_ops.cond(tf.logical_or(math_ops.less(roi_slice_range[2], 1), math_ops.less(roi_slice_range[3], 1)), lambda: (image, labels, bboxes), lambda: (tf.slice(image, [roi_slice_range[0], roi_slice_range[1], 0], [roi_slice_range[2], roi_slice_range[3], -1]), mask_labels, mask_bboxes / scale))
+
+    with tf.name_scope('ssd_random_sample_patch'):
+        image = ops.convert_to_tensor(image, name='image')
+        _Check3DImage(image, require_static=False)
+
+        min_iou_list = tf.convert_to_tensor([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.])
+        samples_min_iou = tf.multinomial(tf.log([[1./7., 1./7., 1./7., 1./7., 1./7., 1./7.]]), 1)
+
+        sampled_min_iou = min_iou_list[tf.cast(samples_min_iou[0][0], tf.int32)]
+
+        return control_flow_ops.cond(math_ops.less(sampled_min_iou, 1.), lambda: sample_patch(image, labels, bboxes, sampled_min_iou), lambda: (image, labels, bboxes))
+
+def ssd_random_expand(image, bboxes, ratio = 2, name=None):
+    with tf.name_scope('ssd_random_expand'):
+        image = ops.convert_to_tensor(image, name='image')
+        _Check3DImage(image, require_static=False)
+
+        if image.get_shape().ndims != 3:
+            raise ValueError('\'image\' must have 3 dimensions.')
+
+        height, width, depth = _ImageDimensions(image, rank=3)
+
+        canvas_width, canvas_height = width * ratio, height * ratio
+
+        mean_color_of_image = tf.reduce_mean(tf.reshape(image, [-1, 3]), 0)
+
+        x = tf.random_uniform([1], minval=0, maxval=canvas_width - width, dtype=tf.int32)[0]
+        y = tf.random_uniform([1], minval=0, maxval=canvas_height - height, dtype=tf.int32)[0]
+
+        paddings = tf.convert_to_tensor([[y, canvas_height - height - y], [x, canvas_width - width - x]])
+
+        # if tf.__version__ == '1.1.0':
+        #     big_canvas = tf.stack([tf.pad(image[:, :, 0], paddings, "CONSTANT", constant_values = mean_color_of_image[0]), tf.pad(image[:, :, 1], paddings, "CONSTANT", constant_values = mean_color_of_image[1]), tf.pad(image[:, :, 2], paddings, "CONSTANT", constant_values = mean_color_of_image[2])], axis=-1)
+        # else:
+        big_canvas = tf.stack([tf.pad(image[:, :, 0], paddings, "CONSTANT", constant_values = mean_color_of_image[0]), tf.pad(image[:, :, 1], paddings, "CONSTANT", constant_values = mean_color_of_image[1]), tf.pad(image[:, :, 2], paddings, "CONSTANT", constant_values = mean_color_of_image[2])], axis=-1)
+
+        scale = tf.cast(tf.stack([height, width, height, width]), bboxes.dtype)
+        absolute_bboxes = bboxes * scale + tf.cast(tf.stack([y, x, y, x]), bboxes.dtype)
+
+        return big_canvas, absolute_bboxes/tf.cast(tf.stack([canvas_height, canvas_width, canvas_height, canvas_width]), bboxes.dtype)
+
+
+
+
+
+
+
 

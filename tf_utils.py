@@ -183,7 +183,7 @@ def update_model_scope(var, ckpt_scope, new_scope):
     return var.op.name.replace(new_scope,'vgg_16')
 
 
-def get_init_fn(flags):
+def get_init_fn(flags, extra_path):
     """Returns a function run by the chief worker to warm-start the training.
     Note that the init_fn is only run when initializing the model during the very
     first global step.
@@ -192,12 +192,14 @@ def get_init_fn(flags):
       An init function run by the supervisor.
     """
     if flags.checkpoint_path is None:
-        return None
-    # Warn the user if a checkpoint exists in the train_dir. Then ignore.
-    if tf.train.latest_checkpoint(flags.train_dir):
+        flags_checkpoint_path = extra_path
+    else:
+        flags_checkpoint_path = flags.checkpoint_path
+    # Warn the user if a checkpoint exists in the model_dir. Then ignore.
+    if tf.train.latest_checkpoint(flags.model_dir):
         tf.logging.info(
             'Ignoring --checkpoint_path because a checkpoint already exists in %s'
-            % flags.train_dir)
+            % flags.model_dir)
         return None
 
     exclusions = []
@@ -223,10 +225,10 @@ def get_init_fn(flags):
              for var in variables_to_restore}
 
 
-    if tf.gfile.IsDirectory(flags.checkpoint_path):
-        checkpoint_path = tf.train.latest_checkpoint(flags.checkpoint_path)
+    if tf.gfile.IsDirectory(flags_checkpoint_path):
+        checkpoint_path = tf.train.latest_checkpoint(flags_checkpoint_path)
     else:
-        checkpoint_path = flags.checkpoint_path
+        checkpoint_path = flags_checkpoint_path
     tf.logging.info('Fine-tuning from %s. Ignoring missing vars: %s' % (checkpoint_path, flags.ignore_missing_vars))
 
     return slim.assign_from_checkpoint_fn(

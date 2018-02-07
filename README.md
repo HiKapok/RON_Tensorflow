@@ -6,5 +6,13 @@ This repository contains code of the re-implement of RON following the above pap
 
 The code is modified from [SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow). You can use the code to train/evaluate a network for object detection task. 
 For more details, please refer to [README of SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow/blob/master/README.md).
+##  ##
+update:
 
+- Add SSD preprocesing method using Tensorflow
+- Modify the network to match the original Caffe code
+- Add nms using Tensorflow ops to support two mode
+- Replica GPU training support
+- Add voc eval
 
+Note: Trainig is in process, and the model will be released later.

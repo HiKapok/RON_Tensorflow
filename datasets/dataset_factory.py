@@ -23,12 +23,14 @@ from datasets import imagenet
 
 from datasets import pascalvoc_2007
 from datasets import pascalvoc_2012
+from datasets import pascalvoc_2007_2012
 
 datasets_map = {
     'cifar10': cifar10,
     'imagenet': imagenet,
     'pascalvoc_2007': pascalvoc_2007,
     'pascalvoc_2012': pascalvoc_2012,
+    'pascalvoc_0712': pascalvoc_2007_2012
 }
 
 
@@ -52,4 +54,30 @@ def get_dataset(name, split_name, dataset_dir, file_pattern=None, reader=None):
     return datasets_map[name].get_split(split_name,
                                         dataset_dir,
                                         file_pattern,
-                                        reader)
+                                        reader,
+                                        False)
+
+def get_replica_dataset(name, split_name, dataset_dir, num_workers, worker_index, file_pattern=None, reader=None):
+    """Given a dataset name and a split_name returns a Dataset.
+
+    Args:
+        name: String, the name of the dataset.
+        split_name: A train/test split name.
+        dataset_dir: The directory where the dataset files are stored.
+        file_pattern: The file pattern to use for matching the dataset source files.
+        reader: The subclass of tf.ReaderBase. If left as `None`, then the default
+            reader defined by each dataset is used.
+    Returns:
+        A `Dataset` class.
+    Raises:
+        ValueError: If the dataset `name` is unknown.
+    """
+    if name not in datasets_map:
+        raise ValueError('Name of dataset unknown %s' % name)
+    return datasets_map[name].get_split(split_name,
+                                        dataset_dir,
+                                        file_pattern,
+                                        reader,
+                                        True,
+                                        num_workers = num_workers,
+                                        worker_index = worker_index)

@@ -19,7 +19,7 @@ from datasets import pascalvoc_common
 
 slim = tf.contrib.slim
 
-FILE_PATTERN = 'voc_2007_%s_*.tfrecord'
+FILE_PATTERN = 'voc_20??_%s_*.tfrecord'
 ITEMS_TO_DESCRIPTIONS = {
     'image': 'A color image of varying height and width.',
     'shape': 'Shape of the image',
@@ -28,29 +28,30 @@ ITEMS_TO_DESCRIPTIONS = {
 }
 # (Images, Objects) statistics on every class.
 TRAIN_STATISTICS = {
+    'cow': (444, 847),
+    'car': (1874, 3267),
+    'pottedplant': (772, 1487),
     'none': (0, 0),
-    'aeroplane': (238, 306),
-    'bicycle': (243, 353),
-    'bird': (330, 486),
-    'boat': (181, 290),
-    'bottle': (244, 505),
-    'bus': (186, 229),
-    'car': (713, 1250),
-    'cat': (337, 376),
-    'chair': (445, 798),
-    'cow': (141, 259),
-    'diningtable': (200, 215),
-    'dog': (421, 510),
-    'horse': (287, 362),
-    'motorbike': (245, 339),
-    'person': (2008, 4690),
-    'pottedplant': (245, 514),
-    'sheep': (96, 257),
-    'sofa': (229, 248),
-    'train': (261, 297),
-    'tvmonitor': (256, 324),
-    'total': (5011, 12608),
+    'person': (6095, 13256),
+    'bicycle': (795, 1064),
+    'bottle': (950, 1764),
+    'dog': (1707, 2025),
+    'motorbike': (771, 1052),
+    'boat': (689, 1140),
+    'train': (805, 925),
+    'total': (16551, 40058),
+    'diningtable': (738, 824),
+    'sheep': (421, 1070),
+    'bus': (607, 822),
+    'aeroplane': (908, 1171),
+    'sofa': (736, 814),
+    'chair': (1564, 3152),
+    'tvmonitor': (831, 1108),
+    'horse': (769, 1072),
+    'cat': (1417, 1593),
+    'bird': (1095, 1605)
 }
+
 TEST_STATISTICS = {
     'none': (0, 0),
     'aeroplane': (1, 1),
@@ -76,7 +77,7 @@ TEST_STATISTICS = {
     'total': (20, 20),
 }
 SPLITS_TO_SIZES = {
-    'train': 5011,
+    'train': 22136,
     'test': 4952,
 }
 SPLITS_TO_STATISTICS = {
@@ -112,3 +113,6 @@ def get_split(split_name, dataset_dir, file_pattern=None, reader=None, replica=F
                                       NUM_CLASSES,
                                       replica,
                                       **kwargs)
+
+# for k, v in TRAIN_STATISTICS2.items():
+#     print("'{}': ({}, {})".format(k ,v[0]+TRAIN_STATISTICS1[k][0],v[1]+TRAIN_STATISTICS1[k][1]))

@@ -285,6 +285,7 @@ def main(_):
         #     op = tf.Print(op, [v], summary_name)
         #     tf.add_to_collection(tf.GraphKeys.SUMMARIES, op)
 
+
         # Split into values and updates ops.
         names_to_values, names_to_updates = slim.metrics.aggregate_metric_map(dict_metrics)
 

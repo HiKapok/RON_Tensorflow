@@ -24,6 +24,8 @@ from nets import nets_factory
 from preprocessing import preprocessing_factory
 import tf_utils
 
+from replicate_model_fn import replicate_model_fn
+from replicate_model_fn import TowerOptimizer
 #import logging
 
 slim = tf.contrib.slim
@@ -34,8 +36,6 @@ slim = tf.contrib.slim
 # # create formatter and add it to the handlers
 # formatter = logging.Formatter('%(asctime)s: %(levelname)s %(name)s - %(message)s')
 # log.setFormatter(formatter)
-
-
 
 DATA_FORMAT = 'NHWC' #'NCHW'
 
@@ -62,20 +62,20 @@ tf.app.flags.DEFINE_string(
     'model_dir', './logs/',
     'Directory where checkpoints and event logs are written to.')
 tf.app.flags.DEFINE_integer(
-    'num_readers', 12,
+    'num_readers', 16,
     'The number of parallel readers that read data from the dataset.')
 tf.app.flags.DEFINE_integer(
-    'num_preprocessing_threads', 24,
+    'num_preprocessing_threads', 42,
     'The number of threads used to create the batches.')
 tf.app.flags.DEFINE_integer(
-    'num_cpu_threads', 64,
+    'num_cpu_threads', 0,
     'The number of cpu cores used to train.')
 
 tf.app.flags.DEFINE_integer(
     'log_every_n_steps', 10,
     'The frequency with which logs are print.')
 tf.app.flags.DEFINE_integer(
-    'save_summaries_secs', 600,
+    'save_summaries_steps', 500,
     'The frequency with which summaries are saved, in seconds.')
 tf.app.flags.DEFINE_integer(
     'save_interval_secs', 7200,
@@ -88,40 +88,28 @@ tf.app.flags.DEFINE_float(
 # =========================================================================== #
 tf.app.flags.DEFINE_float(
     'weight_decay', 0.0005, 'The weight decay on the model weights.')
-tf.app.flags.DEFINE_string(
-    'optimizer', 'momentum',
-    'The name of the optimizer, one of "adadelta", "adagrad", "adam",'
-    '"ftrl", "momentum", "sgd" or "rmsprop".')
 tf.app.flags.DEFINE_float(
     'momentum', 0.9,
     'The momentum for the MomentumOptimizer and RMSPropOptimizer.')
-tf.app.flags.DEFINE_float('rmsprop_momentum', 0.9, 'Momentum.')
-tf.app.flags.DEFINE_float('rmsprop_decay', 0.9, 'Decay term for RMSProp.')
-
 # =========================================================================== #
 # Learning Rate Flags.
 # =========================================================================== #
-tf.app.flags.DEFINE_string(
-    'learning_rate_decay_type',
-    'exponential',
-    'Specifies how the learning rate is decayed. One of "fixed", "exponential",'
-    ' or "polynomial"')
-tf.app.flags.DEFINE_float('learning_rate', 0.0012, 'Initial learning rate.')
+# gradients in replicate_model_fn are sumed in multi-GPU mode
+tf.app.flags.DEFINE_float('learning_rate', 0.0013, 'Initial learning rate.')
 tf.app.flags.DEFINE_float(
-    'end_learning_rate', 0.00008,
+    'end_learning_rate', 0.0001,
     'The minimal end learning rate used by a polynomial decay learning rate.')
 tf.app.flags.DEFINE_float(
     'label_smoothing', 0.0, 'The amount of label smoothing.')
 tf.app.flags.DEFINE_float(
-    'learning_rate_decay_factor', 0.94, 'Learning rate decay factor.')
+    'learning_rate_decay_factor', 0.92, 'Learning rate decay factor.')
 tf.app.flags.DEFINE_float(
-    'num_epochs_per_decay', 2.5,
+    'decay_steps', 1000,
     'Number of epochs after which learning rate decays.')
 tf.app.flags.DEFINE_float(
     'moving_average_decay', None,
     'The decay to use for the moving average.'
     'If left as None, then moving averages are not used.')
-
 # =========================================================================== #
 # Dataset Flags.
 # =========================================================================== #
@@ -144,12 +132,11 @@ tf.app.flags.DEFINE_string(
     'preprocessing_name', None, 'The name of the preprocessing to use. If left '
     'as `None`, then the model_name flag is used.')
 tf.app.flags.DEFINE_integer(
-    'batch_size', 16, 'The number of samples in each batch.')
+    'batch_size', 64, 'The number of samples in each batch.')
 tf.app.flags.DEFINE_integer(
     'train_image_size', None, 'Train image size')
 tf.app.flags.DEFINE_integer('max_number_of_steps', None,
                             'The maximum number of training steps.')
-
 # =========================================================================== #
 # Fine-Tuning Flags.
 # =========================================================================== #
@@ -173,6 +160,141 @@ tf.app.flags.DEFINE_boolean(
 
 FLAGS = tf.app.flags.FLAGS
 
+def validate_batch_size_for_multi_gpu(batch_size):
+    """For multi-gpu, batch-size must be a multiple of the number of
+    available GPUs.
+
+    Note that this should eventually be handled by replicate_model_fn
+    directly. Multi-GPU support is currently experimental, however,
+    so doing the work here until that feature is in place.
+    """
+    from tensorflow.python.client import device_lib
+
+    local_device_protos = device_lib.list_local_devices()
+    num_gpus = sum([1 for d in local_device_protos if d.device_type == 'GPU'])
+    num_gpus=1
+    if not num_gpus:
+        raise ValueError('Multi-GPU mode was specified, but no GPUs '
+                        'were found. To use CPU, run without --multi_gpu.')
+
+    remainder = batch_size % num_gpus
+    if remainder:
+        err = ('When running with multiple GPUs, batch size '
+                'must be a multiple of the number of available GPUs. '
+                'Found {} GPUs with a batch size of {}; try --batch_size={} instead.'
+                ).format(num_gpus, batch_size, batch_size - remainder)
+        raise ValueError(err)
+
+
+def get_init_fn_for_scaffold(extra_path):
+    if FLAGS.checkpoint_path is None:
+        flags_checkpoint_path = extra_path
+    else:
+        flags_checkpoint_path = FLAGS.checkpoint_path
+    # Warn the user if a checkpoint exists in the model_dir. Then ignore.
+    if tf.train.latest_checkpoint(FLAGS.model_dir):
+        tf.logging.info(
+            'Ignoring --checkpoint_path because a checkpoint already exists in %s'
+            % FLAGS.model_dir)
+        return None
+    exclusions = []
+    if FLAGS.checkpoint_exclude_scopes:
+        exclusions = [scope.strip()
+                      for scope in FLAGS.checkpoint_exclude_scopes.split(',')]
+
+    # TODO(sguada) variables.filter_variables()
+    variables_to_restore = []
+    for var in slim.get_model_variables():
+        excluded = False
+        for exclusion in exclusions:
+            if var.op.name.startswith(exclusion):
+                excluded = True
+                break
+        if not excluded:
+            variables_to_restore.append(var)
+    # Change model scope if necessary.
+    if FLAGS.checkpoint_model_scope is not None:
+        variables_to_restore = \
+            {var.op.name.replace(FLAGS.model_name,
+                                 FLAGS.checkpoint_model_scope): var
+             for var in variables_to_restore}
+
+    if tf.gfile.IsDirectory(flags_checkpoint_path):
+        checkpoint_path = tf.train.latest_checkpoint(flags_checkpoint_path)
+    else:
+        checkpoint_path = flags_checkpoint_path
+
+    tf.logging.info('Fine-tuning from %s. Ignoring missing vars: %s' % (checkpoint_path, FLAGS.ignore_missing_vars))
+
+    if not variables_to_restore:
+            raise ValueError('variables_to_restore cannot be empty')
+    if FLAGS.ignore_missing_vars:
+        reader = tf.train.NewCheckpointReader(checkpoint_path)
+        if isinstance(variables_to_restore, dict):
+            var_dict = variables_to_restore
+        else:
+            var_dict = {var.op.name: var for var in variables_to_restore}
+        available_vars = {}
+        for var in var_dict:
+            if reader.has_tensor(var):
+                available_vars[var] = var_dict[var]
+            else:
+                tf.logging.warning('Variable %s missing in checkpoint %s', var, checkpoint_path)
+        variables_to_restore = available_vars
+    if variables_to_restore:
+        saver = tf.train.Saver(variables_to_restore, reshape=False)
+        saver.build()
+        def callback(scaffold, session):
+            saver.restore(session, checkpoint_path)
+        return callback
+    else:
+        tf.logging.warning('No Variables to restore')
+        return None
+
+
+def model_fn(ron_net, image, gclasses, glocalisations, gscores, mode, params):
+    """The model_fn argument for creating an Estimator."""
+    global_step = tf.train.get_or_create_global_step()
+    learning_rate = tf.train.exponential_decay(FLAGS.learning_rate,
+                                              global_step,
+                                              FLAGS.decay_steps,
+                                              FLAGS.learning_rate_decay_factor,
+                                              staircase=True,
+                                              name='exponential_decay_learning_rate')
+    tf.summary.scalar('learning_rate', learning_rate)
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        optimizer = tf.train.MomentumOptimizer(tf.maximum(learning_rate, tf.constant(FLAGS.end_learning_rate, dtype=learning_rate.dtype)), momentum=FLAGS.momentum, name='MomentumOptimizer')
+        # If we are running multi-GPU, we need to wrap the optimizer.
+        optimizer = TowerOptimizer(optimizer)
+
+        arg_scope = ron_net.arg_scope(weight_decay=FLAGS.weight_decay,
+                                              data_format=DATA_FORMAT)
+        with slim.arg_scope(arg_scope):
+            _, logits, objness_pred, objness_logits, localisations, _ = ron_net.net(image, is_training=True)
+        # Add loss function.
+        ron_net.losses(logits, localisations, objness_logits, objness_pred,
+                       gclasses, glocalisations, gscores,
+                       match_threshold = FLAGS.match_threshold,
+                       neg_threshold = FLAGS.neg_threshold,
+                       objness_threshold = FLAGS.objectness_thres,
+                       negative_ratio=FLAGS.negative_ratio,
+                       alpha=FLAGS.loss_alpha,
+                       beta=FLAGS.loss_beta,
+                       label_smoothing=FLAGS.label_smoothing)
+
+        loss = tf.losses.get_total_loss()
+
+        tf.identity(loss, name='loss_to_log')
+        tf.identity(learning_rate, name='learning_rate_to_log')
+        tf.identity(global_step, name='global_step_to_log')
+
+        tf.summary.scalar('total_loss', loss)
+        return tf.estimator.EstimatorSpec(
+            mode=tf.estimator.ModeKeys.TRAIN,
+            loss=loss,
+            train_op=optimizer.minimize(loss, global_step),
+            scaffold = tf.train.Scaffold(init_fn=get_init_fn_for_scaffold(os.path.join(FLAGS.data_dir, 'vgg_16.ckpt'))))
+    raise ValueError('This Model Function Only Support Training Now!')
 # =========================================================================== #
 # Main training routine.
 # =========================================================================== #
@@ -180,27 +302,41 @@ def main(_):
     if not FLAGS.data_dir:
         raise ValueError('You must supply the dataset directory with --data_dir')
 
-    tf.logging.set_verbosity(tf.logging.DEBUG)
-    #with tf.Graph().as_default():
-    # with tf.Graph().as_default(), tf.device('/cpu:0'):
-    with tf.device('/cpu:0'):
-        global_step = slim.create_global_step()
+    tf.logging.set_verbosity(tf.logging.INFO)
 
+    validate_batch_size_for_multi_gpu(FLAGS.batch_size)
+
+    # Get the RON network and its anchors.
+    ron_class = nets_factory.get_network(FLAGS.model_name)
+    ron_params = ron_class.default_params._replace(num_classes=FLAGS.num_classes)
+    ron_net = ron_class(ron_params)
+    ron_shape = ron_net.params.img_shape
+    ron_anchors = ron_net.anchors(ron_shape)
+    # There are two steps required if using multi-GPU: (1) wrap the model_fn,
+    # and (2) wrap the optimizer. The first happens here, and (2) happens
+    # in the model_fn itself when the optimizer is defined.
+    model_function = replicate_model_fn(lambda features, labels, mode, params, config: model_fn(ron_net, features, labels['b_gclasses'], labels['b_glocalisations'], labels['b_gscores'], mode, params), loss_reduction=tf.losses.Reduction.MEAN)
+
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction = FLAGS.gpu_memory_fraction)
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement = False, intra_op_parallelism_threads = FLAGS.num_cpu_threads, inter_op_parallelism_threads = FLAGS.num_cpu_threads, gpu_options = gpu_options)
+
+
+    ron_detector = tf.estimator.Estimator(
+      model_fn=model_function,
+      model_dir=FLAGS.model_dir,
+      params=None,
+      config = tf.estimator.RunConfig(save_summary_steps = FLAGS.save_summaries_steps,
+                                    save_checkpoints_secs = FLAGS.save_interval_secs,
+                                    session_config = config,
+                                    keep_checkpoint_max = 5,
+                                    keep_checkpoint_every_n_hours = FLAGS.save_interval_secs/3600.,
+                                    log_step_count_steps = FLAGS.log_every_n_steps))
+
+    # Train the model
+    def train_input_fn():
         # Select the dataset.
         dataset = dataset_factory.get_dataset(
             FLAGS.dataset_name, FLAGS.dataset_split_name, FLAGS.data_dir)
-
-        # Get the RON network and its anchors.
-        ron_class = nets_factory.get_network(FLAGS.model_name)
-        ron_params = ron_class.default_params._replace(num_classes=FLAGS.num_classes)
-        ron_net = ron_class(ron_params)
-        ron_shape = ron_net.params.img_shape
-        ron_anchors = ron_net.anchors(ron_shape)
-
-        # for i in range(len(ron_anchors)):
-        #     for j in range(len(ron_anchors[i])):
-        #         print(ron_anchors[i][j].shape)
-
         tf_utils.print_configuration(FLAGS.__flags, ron_params,
                                      dataset.data_sources, FLAGS.model_dir)
         # =================================================================== #
@@ -220,8 +356,6 @@ def main(_):
                                                          'object/bbox',
                                                          'object/difficult'])
         glabels = tf.cast(isdifficult < tf.ones_like(isdifficult), glabels.dtype) * glabels
-        #### DEBUG ####
-        #image = tf.Print(image, [shape, glabels, gbboxes], message='before preprocess: ', summarize=20)
         # Select the preprocessing function.
         preprocessing_name = FLAGS.preprocessing_name or FLAGS.model_name
         image_preprocessing_fn = preprocessing_factory.get_preprocessing(
@@ -231,12 +365,6 @@ def main(_):
         image, glabels, gbboxes = image_preprocessing_fn(image, glabels, gbboxes,
                                    out_shape=ron_shape,
                                    data_format=DATA_FORMAT)
-
-        #### DEBUG ####
-        #image = tf.Print(image, [shape, glabels, gbboxes], message='after preprocess: ', summarize=20)
-
-        #glabels = tf.Print(glabels, [glabels], message='glabels: ', summarize=20)
-
 
         # Encode groundtruth labels and bboxes.
         # glocalisations is our regression object
@@ -255,114 +383,16 @@ def main(_):
             batch_size=FLAGS.batch_size,
             num_threads=FLAGS.num_preprocessing_threads,
             capacity=120 * FLAGS.batch_size)
-        b_image, b_gclasses, b_glocalisations, b_gscores = \
-            tf_utils.reshape_list(r, batch_shape)
+        b_image, b_gclasses, b_glocalisations, b_gscores = tf_utils.reshape_list(r, batch_shape)
+        return b_image, {'b_gclasses':b_gclasses, 'b_glocalisations':b_glocalisations, 'b_gscores':b_gscores}
 
-        with tf.device('/gpu:0'):
-            # Construct RON network.
-            arg_scope = ron_net.arg_scope(weight_decay=FLAGS.weight_decay,
-                                          data_format=DATA_FORMAT)
-            with slim.arg_scope(arg_scope):
-                predictions, logits, objness_pred, objness_logits, localisations, end_points = \
-                    ron_net.net(b_image, is_training=True)
-            # Add loss function.
-            ron_net.losses(logits, localisations, objness_logits, objness_pred,
-                           b_gclasses, b_glocalisations, b_gscores,
-                           match_threshold = FLAGS.match_threshold,
-                           neg_threshold = FLAGS.neg_threshold,
-                           objness_threshold = FLAGS.objectness_thres,
-                           negative_ratio=FLAGS.negative_ratio,
-                           alpha=FLAGS.loss_alpha,
-                           beta=FLAGS.loss_beta,
-                           label_smoothing=FLAGS.label_smoothing)
+    # Set up training hook that logs the training accuracy every 100 steps.
+    tensors_to_log = {'total_loss': 'loss_to_log',
+                    'learning_rate': 'learning_rate_to_log',
+                    'global_step': 'global_step_to_log'}
 
-            # Gather initial summaries.
-            summaries = set(tf.get_collection(tf.GraphKeys.SUMMARIES))
-
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-
-            # Add summaries for losses and extra losses.
-            for loss in tf.get_collection(tf.GraphKeys.LOSSES):
-                summaries.add(tf.summary.scalar(loss.op.name, loss))
-            for loss in tf.get_collection('EXTRA_LOSSES'):
-                summaries.add(tf.summary.scalar(loss.op.name, loss))
-
-            # =================================================================== #
-            # Configure the moving averages.
-            # =================================================================== #
-            if FLAGS.moving_average_decay:
-                moving_average_variables = slim.get_model_variables()
-                variable_averages = tf.train.ExponentialMovingAverage(
-                    FLAGS.moving_average_decay, global_step)
-            else:
-                moving_average_variables, variable_averages = None, None
-
-            # =================================================================== #
-            # Configure the optimization procedure.
-            # =================================================================== #
-            learning_rate = tf_utils.configure_learning_rate(FLAGS,
-                                                             dataset.num_samples,
-                                                             global_step)
-            optimizer = tf_utils.configure_optimizer(FLAGS, learning_rate)
-
-            if FLAGS.moving_average_decay:
-                # Update ops executed locally by trainer.
-                update_ops.append(variable_averages.apply(moving_average_variables))
-            summaries.add(tf.summary.scalar('learning_rate', learning_rate))
-
-            # Variables to train.
-            variables_to_train = tf_utils.get_variables_to_train(FLAGS)
-
-            # and returns a train_tensor and summary_op
-            total_loss = tf.losses.get_total_loss()
-            # Add total_loss to summary.
-            summaries.add(tf.summary.scalar('total_loss', total_loss))
-
-            # Create gradient updates.
-            grads = optimizer.compute_gradients(
-                                    total_loss,
-                                    variables_to_train)
-
-            grad_updates = optimizer.apply_gradients(grads,
-                                                     global_step=global_step)
-            update_ops.append(grad_updates)
-            update_op = tf.group(*update_ops)
-            train_tensor = control_flow_ops.with_dependencies([update_op], total_loss,
-                                                              name='train_op')
-
-            # Merge all summaries together.
-            summary_op = tf.summary.merge(list(summaries), name='summary_op')
-
-            # =================================================================== #
-            # Kicks off the training.
-            # =================================================================== #
-            gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction = FLAGS.gpu_memory_fraction)
-            config = tf.ConfigProto(allow_soft_placement=True, log_device_placement = False, intra_op_parallelism_threads = FLAGS.num_cpu_threads, inter_op_parallelism_threads = FLAGS.num_cpu_threads, gpu_options = gpu_options)
-            saver = tf.train.Saver(max_to_keep=5,
-                                   keep_checkpoint_every_n_hours = FLAGS.save_interval_secs/3600.,
-                                   write_version=2,
-                                   pad_step_number=False)
-            def wrapper_debug(sess):
-                sess = tf_debug.LocalCLIDebugWrapperSession(sess, thread_name_filter="MainThread$")
-                sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
-                return sess
-
-            slim.learning.train(
-                train_tensor,
-                logdir=FLAGS.model_dir,
-                master='',
-                is_chief=True,
-                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_16.ckpt')),
-                summary_op=summary_op,
-                number_of_steps=FLAGS.max_number_of_steps,
-                log_every_n_steps=FLAGS.log_every_n_steps,
-                save_summaries_secs=FLAGS.save_summaries_secs,
-                saver=saver,
-                save_interval_secs=FLAGS.save_interval_secs,
-                session_config=config,
-                session_wrapper=None,#wrapper_debug,#
-                sync_optimizer=None)
-
+    logging_hook = tf.train.LoggingTensorHook(tensors=tensors_to_log, every_n_iter=FLAGS.log_every_n_steps)
+    ron_detector.train(input_fn=train_input_fn, hooks=[logging_hook], max_steps=FLAGS.max_number_of_steps)
 
 if __name__ == '__main__':
     tf.app.run()

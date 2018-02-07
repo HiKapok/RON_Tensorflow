@@ -56,6 +56,7 @@ import tensorflow as tf
 
 
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import nn_ops
 
 import tf_extended as tfe
 from nets import custom_layers
@@ -327,53 +328,59 @@ def tensor_shape(x, rank=3):
                 for s, d in zip(static_shape, dynamic_shape)]
 
 
-def pred_cls_module(net_input, var_scope, num_anchors, num_classes):# = 'pred_cls_@4'
+def pred_cls_module(net_input, var_scope, num_anchors, num_classes):
   with tf.variable_scope(var_scope + '_inception1'):
     with tf.variable_scope('Branch_0'):
-      branch_0 = slim.conv2d(net_input, 512, [3, 3], scope='Conv2d_3x3')
+      branch_0 = slim.conv2d(net_input, 512, [3, 3], normalizer_fn = None, activation_fn = None, scope='Conv2d_3x3')
     with tf.variable_scope('Branch_1'):
-      branch_1 = slim.conv2d(net_input, 512, [1, 1], scope='Conv2d_1x1')
+      branch_1 = slim.conv2d(net_input, 512, [1, 1], normalizer_fn = None, activation_fn = None, scope='Conv2d_1x1')
 
     net_input = array_ops.concat([branch_0, branch_1], 3)
+    # only activation after concat
+    net_input = slim.batch_norm(net_input, activation_fn=tf.nn.relu)
+
   with tf.variable_scope(var_scope + '_inception2'):
     with tf.variable_scope('Branch_0'):
-      branch_0 = slim.conv2d(net_input, 512, [3, 3], scope='Conv2d_3x3')
+      branch_0 = slim.conv2d(net_input, 512, [3, 3], normalizer_fn = None, activation_fn = None, scope='Conv2d_3x3')
     with tf.variable_scope('Branch_1'):
-      branch_1 = slim.conv2d(net_input, 512, [1, 1], scope='Conv2d_1x1')
+      branch_1 = slim.conv2d(net_input, 512, [1, 1], normalizer_fn = None, activation_fn = None, scope='Conv2d_1x1')
 
     net_input = array_ops.concat([branch_0, branch_1], 3)
+    # only activation after concat
+    net_input = slim.batch_norm(net_input, activation_fn=tf.nn.relu)
 
     cls_pred = slim.conv2d(net_input, num_anchors * num_classes, [3, 3], activation_fn=None, scope='Conv2d_pred_3x3')
 
-    cls_pred = custom_layers.channel_to_last(cls_pred)
-    cls_pred = tf.reshape(cls_pred, tensor_shape(cls_pred, 4)[:-1]+[num_anchors, num_classes])
+  cls_pred = custom_layers.channel_to_last(cls_pred)
+  cls_pred = tf.reshape(cls_pred, tensor_shape(cls_pred, 4)[:-1]+[num_anchors, num_classes])
 
   return cls_pred
 
 def reg_bbox_module(net_input, var_scope, num_anchors):# = 'reg_bbox_@4'
   with tf.variable_scope(var_scope):
-    net_input = slim.conv2d(net_input, 512, [3, 3], scope='Conv2d_0_3x3')
+    net_input = slim.conv2d(net_input, 512, [3, 3], normalizer_fn = slim.batch_norm, scope='Conv2d_0_3x3')
+
     loc_pred = slim.conv2d(net_input, 4 * num_anchors, [3, 3], activation_fn=None, scope='Conv2d_1_3x3')
 
     loc_pred = custom_layers.channel_to_last(loc_pred)
-    loc_pred = tf.reshape(loc_pred, tensor_shape(loc_pred, 4)[:-1]+[num_anchors, 4])
+    loc_pred = tf.reshape(loc_pred, tensor_shape(loc_pred, 4)[:-1] + [num_anchors, 4])
 
   return loc_pred
 
 # it seem's that no matter how many channals ref_map has, 512 will be used after deconv
 def reverse_connection_module_with_pred(left_input, right_input, num_classes, num_anchors, var_scope):
-  left_conv = slim.conv2d(left_input, 512, [3, 3], scope = var_scope + '_conv_left')
   if right_input is None:
-      ref_map = left_conv
+      ref_map = slim.conv2d(left_input, 512, [2, 2], stride=2, normalizer_fn = slim.batch_norm, scope = var_scope + '_conv_left')
   else:
-      upsampling = slim.conv2d_transpose(right_input, 512, [2, 2], stride=2, scope = var_scope + '_deconv_right')
-      #tf.nn.conv2d_transpose(right_input, [2, 2], output_shape=[512, on_size, on_size, 3], strides=[1,2,2,1], padding="SAME")
-      #upsampling = tf.Print(upsampling, [upsampling.shape])
-      ref_map = left_conv + upsampling
+      left_conv = slim.conv2d(left_input, 512, [3, 3], normalizer_fn = slim.batch_norm, scope = var_scope + '_conv_left')
+      # remove BN for deconv, but leave Relu
+      upsampling = slim.conv2d_transpose(right_input, 512, [2, 2], stride=2, normalizer_fn = None, scope = var_scope + '_deconv_right')
+      ref_map = tf.nn.relu(left_conv + upsampling)
 
-  # ref_map = tf.zeros_like(ref_map)
-  objectness_logits = tf.reshape(slim.conv2d(ref_map, 2 * num_anchors, [3, 3], activation_fn=None, scope= var_scope + '_objectness'), tensor_shape(ref_map, 4)[:-1]+[num_anchors, 2])#[-1, 2],
-  #objectness_logits = tf.reshape(slim.conv2d(ref_map, 2 * num_anchors, [3, 3], activation_fn=None, scope= var_scope + '_objectness'), [-1, 2])
+  objness_ref_map = slim.conv2d(ref_map, 512, [3, 3], normalizer_fn = slim.batch_norm, scope= var_scope + '_objectness')
+  objectness_logits = tf.reshape(slim.conv2d(objness_ref_map, 2 * num_anchors, [3, 3], activation_fn = None, scope= var_scope + '_objectness_score'), tensor_shape(objness_ref_map, 4)[:-1]+[num_anchors, 2])
+
+  # objectness_logits = tf.reshape(slim.conv2d(ref_map, 2 * num_anchors, [3, 3], activation_fn = None, scope= var_scope + '_objectness'), tensor_shape(ref_map, 4)[:-1]+[num_anchors, 2])
 
   return ref_map, objectness_logits, pred_cls_module(ref_map, var_scope, num_anchors, num_classes), reg_bbox_module(ref_map, var_scope, num_anchors)
 
@@ -421,12 +428,10 @@ def ron_net(inputs,
 
         # Additional RON blocks.
         # Block 6
-        net = slim.conv2d(net, 512, [3, 3], scope='conv6')
+        net = slim.conv2d(net, 4096, [7, 7], scope='conv6')
         end_points['block6'] = net
-        # need any dropout?
-        net = tf.layers.dropout(net, rate=dropout_keep_prob, training=is_training)
-        # Block 7: 2x2 conv with down_sample.
-        net = slim.conv2d(net, 1024, [2, 2], stride=2, scope='conv7')
+        # Block 7: 1x1 conv, no padding.
+        net = slim.conv2d(net, 4096, [1, 1], scope='conv7')
         end_points['block7'] = net
 
         # Prediction and localisations layers.
@@ -466,6 +471,25 @@ def ron_arg_scope(weight_decay=0.0005, data_format='NHWC'):
     Returns:
       An arg_scope.
     """
+    # with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.fully_connected],
+    #                     activation_fn=tf.nn.relu,
+    #                     weights_regularizer=slim.l2_regularizer(weight_decay),
+    #                     weights_initializer=tf.contrib.layers.xavier_initializer(),
+    #                     biases_initializer=tf.zeros_initializer()):
+    #     with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.max_pool2d],
+    #                         padding='SAME',
+    #                         data_format=data_format):
+    #         with slim.arg_scope([slim.batch_norm],
+    #                         activation_fn=tf.nn.relu,
+    #                         decay=0.997,
+    #                         epsilon=1e-5,
+    #                         scale=True,
+    #                         data_format=data_format):
+    #             with slim.arg_scope([custom_layers.pad2d,
+    #                                  custom_layers.l2_normalization,
+    #                                  custom_layers.channel_to_last],
+    #                                 data_format=data_format) as sc:
+    #                 return sc
     with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.fully_connected],
                         activation_fn=tf.nn.relu,
                         weights_regularizer=slim.l2_regularizer(weight_decay),
@@ -474,11 +498,19 @@ def ron_arg_scope(weight_decay=0.0005, data_format='NHWC'):
         with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.max_pool2d],
                             padding='SAME',
                             data_format=data_format):
-            with slim.arg_scope([custom_layers.pad2d,
-                                 custom_layers.l2_normalization,
-                                 custom_layers.channel_to_last],
-                                data_format=data_format) as sc:
-                return sc
+            with slim.arg_scope([slim.batch_norm],
+                            # default no activation_fn for BN
+                            activation_fn=None,
+                            decay=0.997,
+                            epsilon=1e-5,
+                            scale=True,
+                            fused=True,
+                            data_format=data_format):
+                with slim.arg_scope([custom_layers.pad2d,
+                                     custom_layers.l2_normalization,
+                                     custom_layers.channel_to_last],
+                                    data_format=data_format) as sc:
+                    return sc
 
 
 # =========================================================================== #
@@ -538,7 +570,8 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         n_positives = tf.reduce_sum(fpositive_mask)
         # negtive examples are those max_overlap is still lower than neg_threshold, note that some positive may also has lower jaccard
 
-        negtive_mask = tf.cast(tf.logical_not(positive_mask), dtype) * gscores < neg_threshold
+        #negtive_mask = tf.cast(tf.logical_not(positive_mask), dtype) * gscores < neg_threshold
+        negtive_mask = tf.logical_and(tf.logical_not(positive_mask), gscores < neg_threshold)
         #negtive_mask = tf.logical_and(gscores < neg_threshold, tf.logical_not(positive_mask))
         fnegtive_mask = tf.cast(negtive_mask, dtype)
         n_negtives = tf.reduce_sum(fnegtive_mask)
@@ -549,8 +582,8 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
 
         rand_neg_mask = tf.random_uniform(tfe.get_shape(gscores, 1), minval=0, maxval=1.) < tfe.safe_divide(tf.cast(n_neg_to_select, dtype), n_negtives, name='rand_select_objness')
         # include both random_select negtive and all positive examples
-        final_neg_maks_objness = tf.stop_gradient(tf.logical_or(tf.logical_and(negtive_mask, rand_neg_mask), positive_mask))
-        total_examples_for_objness = tf.reduce_sum(tf.cast(final_neg_maks_objness, dtype))
+        final_neg_mask_objness = tf.stop_gradient(tf.logical_or(tf.logical_and(negtive_mask, rand_neg_mask), positive_mask))
+        total_examples_for_objness = tf.reduce_sum(tf.cast(final_neg_mask_objness, dtype))
         # the label for objectness is all the positive
         objness_pred_label = tf.stop_gradient(tf.cast(positive_mask, tf.int32))
 
@@ -567,17 +600,21 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         # objectness mask for select real positive for detection
         objectness_mask = objness_pred > objness_threshold
         # positive for detection, and insure there is more than one positive to predict
-        cls_positive_mask = tf.stop_gradient(tf.logical_or(tf.logical_and(positive_mask, objectness_mask), max_objness_mask))
+        #cls_positive_mask = tf.stop_gradient(tf.logical_or(tf.logical_and(positive_mask, objectness_mask), max_objness_mask))
+        cls_positive_mask = tf.stop_gradient(tf.logical_and(positive_mask, objectness_mask))
+        cls_negtive_mask = tf.logical_and(objectness_mask, negtive_mask)
+        #cls_negtive_mask = tf.logical_and(objectness_mask, tf.logical_not(cls_positive_mask))
 
+        n_cls_negtives = tf.reduce_sum(tf.cast(cls_negtive_mask, dtype))
 
         fcls_positive_mask = tf.cast(cls_positive_mask, dtype)
         n_cls_positives = tf.reduce_sum(fcls_positive_mask)
         n_cls_neg_to_select = tf.cast(negative_ratio * n_cls_positives, tf.int32)
-        n_cls_neg_to_select = tf.minimum(n_cls_neg_to_select, tf.cast(n_negtives, tf.int32))
+        n_cls_neg_to_select = tf.minimum(n_cls_neg_to_select, tf.cast(n_cls_negtives, tf.int32))
         # random selected negtive mask
-        rand_cls_neg_mask = tf.random_uniform(tfe.get_shape(gscores, 1), minval=0, maxval=1.) < tfe.safe_divide(tf.cast(n_cls_neg_to_select, dtype), n_negtives, name='rand_select_cls')
+        rand_cls_neg_mask = tf.random_uniform(tfe.get_shape(gscores, 1), minval=0, maxval=1.) < tfe.safe_divide(tf.cast(n_cls_neg_to_select, dtype), n_cls_negtives, name='rand_select_cls')
         # include both random_select negtive and all positive(positive is filtered by objectness)
-        final_cls_neg_maks_objness = tf.stop_gradient(tf.logical_or(tf.logical_and(negtive_mask, rand_cls_neg_mask), cls_positive_mask))
+        final_cls_neg_maks_objness = tf.stop_gradient(tf.logical_or(tf.logical_and(cls_negtive_mask, rand_cls_neg_mask), cls_positive_mask))
         total_examples_for_cls = tf.reduce_sum(tf.cast(final_cls_neg_maks_objness, dtype))
 
         # n_cls_neg_to_select = tf.Print(n_cls_neg_to_select, [n_cls_neg_to_select], message='n_cls_neg_to_select: ', summarize=20)
@@ -590,17 +627,16 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
             #weights = (1. - alpha - beta) * tf.cast(final_cls_neg_maks_objness, dtype)
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.stop_gradient(gclasses))
 
-            loss = (1. - alpha - beta) * tf.reduce_mean(tf.boolean_mask(loss, final_cls_neg_maks_objness))
+            loss = tf.cond(n_positives > 0., lambda: (1. - alpha - beta) * tf.reduce_mean(tf.boolean_mask(loss, final_cls_neg_maks_objness)), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)
             #loss = tfe.safe_divide(tf.reduce_sum(loss * weights), total_examples_for_cls, name='cls_loss')
             tf.losses.add_loss(loss)
 
         with tf.name_scope('cross_entropy_objectness'):
-            #weights = alpha * tf.cast(final_neg_maks_objness, dtype)
+            #weights = alpha * tf.cast(final_neg_mask_objness, dtype)
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=objness_logits, labels=objness_pred_label)
-
-            loss = alpha * tf.reduce_mean(tf.boolean_mask(loss, final_neg_maks_objness))
+            loss = tf.cond(n_positives > 0., lambda: alpha * tf.reduce_mean(tf.boolean_mask(loss, final_neg_mask_objness)), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)
             #loss = tfe.safe_divide(tf.reduce_sum(loss * weights), total_examples_for_objness, name='objness_loss')
@@ -610,8 +646,10 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         with tf.name_scope('localization'):
             # Weights Tensor: positive mask + random negative.
             #weights = tf.expand_dims(beta * tf.cast(fcls_positive_mask, dtype), axis=-1)
-            loss = custom_layers.abs_smooth(localisations - tf.stop_gradient(glocalisations))
-            loss = beta * tf.reduce_mean(tf.boolean_mask(loss, tf.stop_gradient(cls_positive_mask)))
+            loss = custom_layers.modified_smooth_l1(localisations, tf.stop_gradient(glocalisations), sigma = 3.)
+            #loss = custom_layers.abs_smooth(localisations - tf.stop_gradient(glocalisations))
+
+            loss = tf.cond(n_positives > 0., lambda: beta * n_positives / total_examples_for_objness * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(positive_mask))), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)
 

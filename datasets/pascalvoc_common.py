@@ -45,9 +45,15 @@ VOC_LABELS = {
     'tvmonitor': (20, 'Indoor'),
 }
 
+VOC_CLASSES = (  # always index 0
+    'aeroplane', 'bicycle', 'bird', 'boat',
+    'bottle', 'bus', 'car', 'cat', 'chair',
+    'cow', 'diningtable', 'dog', 'horse',
+    'motorbike', 'person', 'pottedplant',
+    'sheep', 'sofa', 'train', 'tvmonitor')
 
 def get_split(split_name, dataset_dir, file_pattern, reader,
-              split_to_sizes, items_to_descriptions, num_classes):
+              split_to_sizes, items_to_descriptions, num_classes, replica, **kwargs):
     """Gets a dataset tuple with instructions for reading Pascal VOC dataset.
 
     Args:
@@ -66,7 +72,22 @@ def get_split(split_name, dataset_dir, file_pattern, reader,
     """
     if split_name not in split_to_sizes:
         raise ValueError('split name %s was not recognized.' % split_name)
-    file_pattern = os.path.join(dataset_dir, file_pattern % split_name)
+
+    if replica:
+        if 'num_workers' not in kwargs:
+            raise ValueError('Must provide "num_workers" for slim DatasetDataProvider.')
+        if 'worker_index' not in kwargs:
+            raise ValueError('Must provide "worker_index" for slim DatasetDataProvider.')
+        if not (kwargs['worker_index'] < kwargs['num_workers']):
+            raise ValueError('"worker_index" must in the range [0, num_workers].')
+        input_file_list = tf.gfile.Glob(os.path.join(dataset_dir, file_pattern % split_name))
+
+        slice_start = int(kwargs['worker_index']*len(input_file_list)/kwargs['num_workers'])
+        slice_end = int((kwargs['worker_index']+1)*len(input_file_list)/kwargs['num_workers'])
+        input_file_list.sort()
+        file_pattern = input_file_list[slice_start:slice_end]
+    else:
+        file_pattern = os.path.join(dataset_dir, file_pattern % split_name)
 
     # Allowing None in the signature so that dataset_factory can use the default.
     if reader is None:

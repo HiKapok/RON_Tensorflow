@@ -5,16 +5,25 @@ from tensorflow.python.ops import control_flow_ops
 import time
 from datetime import datetime
 import numpy as np
+import pickle
+import os
+
+import xml.etree.ElementTree as ET
 
 from scipy.misc import imread, imsave, imshow, imresize
 
 from datasets import dataset_factory
+from datasets import voc_eval
+from datasets import pascalvoc_2007
+from datasets import pascalvoc_common
+
 from nets import nets_factory
 from nets import ssd_common
 from preprocessing import preprocessing_factory
 import tf_utils
 
 import tf_extended as tfe
+from tf_extended import tensors as tfe_tensors
 
 import draw_toolbox
 
@@ -31,18 +40,18 @@ tf.app.flags.DEFINE_string(
     'test_dir', './eval_logs/',
     'Directory where checkpoints and event logs are written to.')
 tf.app.flags.DEFINE_integer(
-    'num_readers', 4,
+    'num_readers', 2,
     'The number of parallel readers that read data from the dataset.')
 tf.app.flags.DEFINE_integer(
-    'num_preprocessing_threads', 4,
+    'num_preprocessing_threads', 2,
     'The number of threads used to create the batches.')
 tf.app.flags.DEFINE_integer(
-    'num_cpu_threads', 3,
+    'num_cpu_threads', 6,
     'The number of cpu cores used to train.')
 tf.app.flags.DEFINE_float(
-    'gpu_memory_fraction', 0.1, 'GPU memory fraction to use.')
+    'gpu_memory_fraction', 1., 'GPU memory fraction to use.')
 tf.app.flags.DEFINE_integer(
-    'log_every_n_steps', 1,
+    'log_every_n_steps', 5,
     'The frequency with which logs are print.')
 # =========================================================================== #
 # Dataset Flags.
@@ -54,7 +63,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'dataset_split_name', 'test', 'The name of the train/test split.')
 tf.app.flags.DEFINE_string(
-    'dataset_dir', '../PASCAL/VOC2007TEST/TF/', 'The directory where the dataset files are stored.')
+    'dataset_dir', '../PASCAL/tfrecords/VOC2007/TF_test/', 'The directory where the dataset files are stored.')
 tf.app.flags.DEFINE_integer(
     'labels_offset', 0,
     'An offset for the labels in the dataset. This flag is primarily used to '
@@ -70,17 +79,21 @@ tf.app.flags.DEFINE_float(
     'moving_average_decay', None,
     'The decay to use for the moving average.'
     'If left as None, then moving averages are not used.')
+tf.app.flags.DEFINE_float(
+    'select_threshold', 0.6, 'Class-specific confidence score threshold for selecting a box.')
+tf.app.flags.DEFINE_float(
+    'nms_threshold', 0.4, 'Matching threshold in NMS algorithm.')
+tf.app.flags.DEFINE_float(
+    'objectness_thres', 0.95, 'threshold for the objectness to indicate the exist of object in that location.')
 tf.app.flags.DEFINE_integer(
-    'select_threshold', 0.4, 'Class-specific confidence score threshold for selecting a box.')
+    'nms_topk_percls', 10, 'Number of object for each class to keep after NMS.')
 tf.app.flags.DEFINE_integer(
-    'nms_threshold', 0.5, 'Matching threshold in NMS algorithm.')
-tf.app.flags.DEFINE_integer(
-    'nms_topk', 5, 'Number of total object to keep after NMS.')
+    'nms_topk', 20, 'Number of total object to keep after NMS.')
 # =========================================================================== #
 # Fine-Tuning Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', './model/model.ckpt-13417', #None, #'./checkpoints/ssd_300_vgg.ckpt',
+    'checkpoint_path', './model/model.ckpt-116056', #None, #'./checkpoints/ssd_300_vgg.ckpt',
     'The path to a checkpoint from which to fine-tune.')
 tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', None,
@@ -100,23 +113,427 @@ def flaten_predict(predictions, objness_pred, localisations):
     batch_size = predictions_shape[0]
     num_classes = predictions_shape[-1]
 
+    if batch_size > 1:
+        raise ValueError('only batch_size 1 is supported.')
+
     flaten_pred = []
     flaten_labels = []
     flaten_objness = []
     flaten_locations = []
     flaten_scores = []
-    flaten_cutoff_scores = []
 
     for i in range(len(predictions)):
-        flaten_labels.append(tf.reshape(tf.argmax(predictions[i], -1), [batch_size, -1]))
         flaten_pred.append(tf.reshape(predictions[i], [batch_size, -1, num_classes]))
         flaten_objness.append(tf.reshape(objness_pred[i], [batch_size, -1]))
+        cls_pred = tf.expand_dims(flaten_objness[i], axis=-1) * flaten_pred[i]
+        flaten_scores.append(tf.reshape(cls_pred, [batch_size, -1, num_classes]))
+        #flaten_scores.append(tf.reshape(tf.reduce_max(cls_pred, -1), [batch_size, -1]))
+        flaten_labels.append(tf.reshape(tf.argmax(cls_pred, -1), [batch_size, -1]))
         flaten_locations.append(tf.reshape(localisations[i], [batch_size, -1, 4]))
-        flaten_scores.append(tf.expand_dims(flaten_objness[i], axis=-1) * flaten_pred[i])
-        max_mask = tf.equal(tf.reduce_max(predictions[i], axis=-1, keep_dims=True), predictions[i])
-        flaten_cutoff_scores.append(tf.cast(max_mask, predictions[i].dtype) * predictions[i])
+    # assume batch_size is always 1
+    total_scores = tf.squeeze(tf.concat(flaten_scores, 1), 0)
+    total_objness = tf.squeeze(tf.concat(flaten_objness, 1), 0)
+    total_locations = tf.squeeze(tf.concat(flaten_locations, 1), 0)
+    total_labels = tf.squeeze(tf.concat(flaten_labels, 1), 0)
+    # remove bboxes that are not foreground
+    non_background_mask = tf.greater(total_labels, 0)
+    # remove bboxes that have scores lower than select_threshold
+    #bbox_mask = tf.logical_and(non_background_mask, tf.greater(total_scores, FLAGS.select_threshold))
+    # total_objness = tf.Print(total_objness, [total_objness])
+    bbox_mask = tf.logical_and(non_background_mask, tf.greater(total_objness, FLAGS.objectness_thres))
+    return tf.boolean_mask(total_scores, bbox_mask), tf.boolean_mask(total_labels, bbox_mask), tf.boolean_mask(total_locations, bbox_mask)
 
-    return flaten_scores, flaten_cutoff_scores, flaten_locations, flaten_labels
+def tf_bboxes_nms(scores, labels, bboxes, nms_threshold = 0.5, keep_top_k = 200, mode = 'min', scope=None):
+    with tf.name_scope(scope, 'tf_bboxes_nms', [scores, labels, bboxes]):
+        # get the cls_score for the most-likely class
+        scores = tf.reduce_max(scores, -1)
+        # apply threshold
+        bbox_mask = tf.greater(scores, FLAGS.select_threshold)
+        scores, labels, bboxes = tf.boolean_mask(scores, bbox_mask), tf.boolean_mask(labels, bbox_mask), tf.boolean_mask(bboxes, bbox_mask)
+        num_anchors = tf.shape(scores)[0]
+        def nms_proc(scores, labels, bboxes):
+            # sort all the bboxes
+            scores, idxes = tf.nn.top_k(scores, k = num_anchors, sorted = True)
+            labels, bboxes = tf.gather(labels, idxes), tf.gather(bboxes, idxes)
+
+            ymin = bboxes[:, 0]
+            xmin = bboxes[:, 1]
+            ymax = bboxes[:, 2]
+            xmax = bboxes[:, 3]
+
+            vol_anchors = (xmax - xmin) * (ymax - ymin)
+
+            nms_mask = tf.cast(tf.ones_like(scores, dtype=tf.int8), tf.bool)
+            keep_mask = tf.cast(tf.zeros_like(scores, dtype=tf.int8), tf.bool)
+
+            def safe_divide(numerator, denominator):
+                return tf.where(tf.greater(denominator, 0), tf.divide(numerator, denominator), tf.zeros_like(denominator))
+
+            def get_scores(bbox, nms_mask):
+                # the inner square
+                inner_ymin = tf.maximum(ymin, bbox[0])
+                inner_xmin = tf.maximum(xmin, bbox[1])
+                inner_ymax = tf.minimum(ymax, bbox[2])
+                inner_xmax = tf.minimum(xmax, bbox[3])
+                h = tf.maximum(inner_ymax - inner_ymin, 0.)
+                w = tf.maximum(inner_xmax - inner_xmin, 0.)
+                inner_vol = h * w
+                this_vol = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if mode == 'union':
+                    union_vol = vol_anchors - inner_vol  + this_vol
+                elif mode == 'min':
+                    union_vol = tf.minimum(vol_anchors, this_vol)
+                else:
+                    raise ValueError('unknown mode to use for nms.')
+                return safe_divide(inner_vol, union_vol) * tf.cast(nms_mask, tf.float32)
+
+            def condition(index, nms_mask, keep_mask):
+                return tf.logical_and(tf.reduce_sum(tf.cast(nms_mask, tf.int32)) > 0, tf.less(index, keep_top_k))
+
+            def body(index, nms_mask, keep_mask):
+                # at least one True in nms_mask
+                indices = tf.where(nms_mask)[0][0]
+                bbox = bboxes[indices]
+                this_mask = tf.one_hot(indices, num_anchors, on_value=False, off_value=True, dtype=tf.bool)
+                keep_mask = tf.logical_or(keep_mask, tf.logical_not(this_mask))
+                nms_mask = tf.logical_and(nms_mask, this_mask)
+
+                nms_scores = get_scores(bbox, nms_mask)
+
+                nms_mask = tf.logical_and(nms_mask, nms_scores < nms_threshold)
+                return [index+1, nms_mask, keep_mask]
+
+            index = 0
+            [index, nms_mask, keep_mask] = tf.while_loop(condition, body, [index, nms_mask, keep_mask])
+            return tf.boolean_mask(scores, keep_mask), tf.boolean_mask(labels, keep_mask), tf.boolean_mask(bboxes, keep_mask)
+
+        return tf.cond(tf.less(num_anchors, 1), lambda: (scores, labels, bboxes), lambda: nms_proc(scores, labels, bboxes))
+
+def tf_bboxes_nms_by_class(scores, labels, bboxes, nms_threshold = 0.5, keep_top_k = 200, mode = 'min', scope=None):
+    with tf.name_scope(scope, 'tf_bboxes_nms_by_class', [scores, labels, bboxes]):
+        num_anchors = tf.shape(scores)[0]
+        def nms_proc(scores, labels, bboxes):
+            # sort all the bboxes
+            scores, idxes = tf.nn.top_k(scores, k = num_anchors, sorted = True)
+            labels, bboxes = tf.gather(labels, idxes), tf.gather(bboxes, idxes)
+
+            ymin = bboxes[:, 0]
+            xmin = bboxes[:, 1]
+            ymax = bboxes[:, 2]
+            xmax = bboxes[:, 3]
+
+            vol_anchors = (xmax - xmin) * (ymax - ymin)
+
+            nms_mask = tf.cast(tf.ones_like(scores, dtype=tf.int8), tf.bool)
+            nms_mask = tf.logical_and(nms_mask, tf.greater(scores, FLAGS.select_threshold))
+            keep_mask = tf.cast(tf.zeros_like(scores, dtype=tf.int8), tf.bool)
+
+            def safe_divide(numerator, denominator):
+                return tf.where(tf.greater(denominator, 0), tf.divide(numerator, denominator), tf.zeros_like(denominator))
+
+            def get_scores(bbox, nms_mask):
+                # the inner square
+                inner_ymin = tf.maximum(ymin, bbox[0])
+                inner_xmin = tf.maximum(xmin, bbox[1])
+                inner_ymax = tf.minimum(ymax, bbox[2])
+                inner_xmax = tf.minimum(xmax, bbox[3])
+                h = tf.maximum(inner_ymax - inner_ymin, 0.)
+                w = tf.maximum(inner_xmax - inner_xmin, 0.)
+                inner_vol = h * w
+                this_vol = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if mode == 'union':
+                    union_vol = vol_anchors - inner_vol  + this_vol
+                elif mode == 'min':
+                    union_vol = tf.minimum(vol_anchors, this_vol)
+                else:
+                    raise ValueError('unknown mode to use for nms.')
+                return safe_divide(inner_vol, union_vol) * tf.cast(nms_mask, tf.float32)
+
+            def condition(index, nms_mask, keep_mask):
+                return tf.logical_and(tf.reduce_sum(tf.cast(nms_mask, tf.int32)) > 0, tf.less(index, keep_top_k))
+
+            def body(index, nms_mask, keep_mask):
+                # at least one True in nms_mask
+                indices = tf.where(nms_mask)[0][0]
+                bbox = bboxes[indices]
+                this_mask = tf.one_hot(indices, num_anchors, on_value=False, off_value=True, dtype=tf.bool)
+
+                this_keep_mask = tf.one_hot(idxes[indices], num_anchors, on_value=True, off_value=False, dtype=tf.bool)
+                keep_mask = tf.logical_or(keep_mask, this_keep_mask)
+
+                nms_mask = tf.logical_and(nms_mask, this_mask)
+
+                nms_scores = get_scores(bbox, nms_mask)
+
+                nms_mask = tf.logical_and(nms_mask, nms_scores < nms_threshold)
+                return [index+1, nms_mask, keep_mask]
+
+            index = 0
+            [index, nms_mask, keep_mask] = tf.while_loop(condition, body, [index, nms_mask, keep_mask])
+            return keep_mask
+        def nms_by_cls_proc(scores, labels, bboxes):
+            total_keep_mask = tf.map_fn(lambda _scores: nms_proc(_scores, labels, bboxes),
+                                    tf.transpose(scores, perm=[1, 0]), parallel_iterations=10,
+                                    back_prop=False,
+                                    swap_memory=False,
+                                    dtype=tf.bool,
+                                    infer_shape=True)
+            total_keep_mask = tf.transpose(total_keep_mask, perm=[1, 0])
+            # scores in the keep places
+            keep_scores = scores * tf.cast(total_keep_mask, scores.dtype)
+            # get the max one in case one bbox is kept twice for different classes
+            max_mask_scores = tf.reduce_max(keep_scores, -1)
+            new_labels = tf.argmax(keep_scores, -1)
+            # ignore bboxes those not been kept
+            keep_mask = max_mask_scores > 0.
+            return tf.boolean_mask(max_mask_scores, keep_mask), tf.boolean_mask(new_labels, keep_mask), tf.boolean_mask(bboxes, keep_mask)
+
+        return tf.cond(tf.less(num_anchors, 1), lambda: (scores, labels, bboxes), lambda: nms_by_cls_proc(scores, labels, bboxes))
+
+def tf_bboxes_nms_by_class_v1(scores, labels, bboxes, nms_threshold = 0.5, keep_top_k = 200, mode = 'min', scope=None):
+    with tf.name_scope(scope, 'tf_bboxes_nms_by_class', [scores, labels, bboxes]):
+        scores = tf.reduce_max(scores, -1)
+        bbox_mask = tf.greater(scores, FLAGS.select_threshold)
+        scores, labels, bboxes = tf.boolean_mask(scores, bbox_mask), tf.boolean_mask(labels, bbox_mask), tf.boolean_mask(bboxes, bbox_mask)
+        num_anchors = tf.shape(scores)[0]
+        def nms_proc(scores, labels, bboxes):
+            # sort all the bboxes
+            scores, idxes = tf.nn.top_k(scores, k = num_anchors, sorted = True)
+            labels, bboxes = tf.gather(labels, idxes), tf.gather(bboxes, idxes)
+
+            ymin = bboxes[:, 0]
+            xmin = bboxes[:, 1]
+            ymax = bboxes[:, 2]
+            xmax = bboxes[:, 3]
+
+            vol_anchors = (xmax - xmin) * (ymax - ymin)
+
+            total_keep_mask = tf.cast(tf.zeros_like(scores, dtype=tf.int8), tf.bool)
+
+            def safe_divide(numerator, denominator):
+                return tf.where(tf.greater(denominator, 0), tf.divide(numerator, denominator), tf.zeros_like(denominator))
+
+            def get_scores(bbox, nms_mask):
+                # the inner square
+                inner_ymin = tf.maximum(ymin, bbox[0])
+                inner_xmin = tf.maximum(xmin, bbox[1])
+                inner_ymax = tf.minimum(ymax, bbox[2])
+                inner_xmax = tf.minimum(xmax, bbox[3])
+                h = tf.maximum(inner_ymax - inner_ymin, 0.)
+                w = tf.maximum(inner_xmax - inner_xmin, 0.)
+                inner_vol = h * w
+                this_vol = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if mode == 'union':
+                    union_vol = vol_anchors - inner_vol  + this_vol
+                elif mode == 'min':
+                    union_vol = tf.minimum(vol_anchors, this_vol)
+                else:
+                    raise ValueError('unknown mode to use for nms.')
+                return safe_divide(inner_vol, union_vol) * tf.cast(nms_mask, tf.float32)
+
+            def condition(index, nms_mask, keep_mask):
+                return tf.logical_and(tf.reduce_sum(tf.cast(nms_mask, tf.int32)) > 0, tf.less(index, keep_top_k))
+
+            def body(index, nms_mask, keep_mask):
+                # at least one True in nms_mask
+                indices = tf.where(nms_mask)[0][0]
+                bbox = bboxes[indices]
+                this_mask = tf.one_hot(indices, num_anchors, on_value=False, off_value=True, dtype=tf.bool)
+                keep_mask = tf.logical_or(keep_mask, tf.logical_not(this_mask))
+                nms_mask = tf.logical_and(nms_mask, this_mask)
+
+                nms_scores = get_scores(bbox, nms_mask)
+
+                nms_mask = tf.logical_and(nms_mask, nms_scores < nms_threshold)
+                return [index+1, nms_mask, keep_mask]
+            def nms_loop_for_each(cls_index, total_keep_mask):
+                index = 0
+                nms_mask = tf.equal(tf.cast(cls_index, tf.int64), labels)
+                keep_mask = tf.cast(tf.zeros_like(scores, dtype=tf.int8), tf.bool)
+
+                [_, _, keep_mask] = tf.while_loop(condition, body, [index, nms_mask, keep_mask])
+                total_keep_mask = tf.logical_or(total_keep_mask, keep_mask)
+
+                return cls_index + 1, total_keep_mask
+            cls_index = 1
+            [_, total_keep_mask] = tf.while_loop(lambda cls_index, _: tf.less(cls_index, FLAGS.num_classes), nms_loop_for_each, [cls_index, total_keep_mask])
+            indices_to_select = tf.where(total_keep_mask)
+            select_mask = tf.cond(tf.less(tf.shape(indices_to_select)[0], keep_top_k + 1),
+                                lambda: total_keep_mask,
+                                lambda: tf.logical_and(total_keep_mask, tf.range(tf.cast(tf.shape(total_keep_mask)[0], tf.int64), dtype=tf.int64) < indices_to_select[keep_top_k][0]))
+            return tf.boolean_mask(scores, select_mask), tf.boolean_mask(labels, select_mask), tf.boolean_mask(bboxes, select_mask)
+
+        return tf.cond(tf.less(num_anchors, 1), lambda: (scores, labels, bboxes), lambda: nms_proc(scores, labels, bboxes))
+
+
+def filter_boxes(scores, labels, bboxes, min_size_ratio, image_shape, net_input_shape):
+    """Only keep boxes with both sides >= min_size and center within the image.
+    min_size_ratio is the ratio relative to net input shape
+    """
+    # Scale min_size to match image scale
+    min_size = tf.maximum(0.0001, min_size_ratio * tf.sqrt(tf.cast(image_shape[0] * image_shape[1], tf.float32) / (net_input_shape[0] * net_input_shape[1])))
+
+    ymin = bboxes[:, 0]
+    xmin = bboxes[:, 1]
+    ymax = bboxes[:, 2]
+    xmax = bboxes[:, 3]
+
+    ws = xmax - xmin
+    hs = ymax - ymin
+    x_ctr = xmin + ws / 2.
+    y_ctr = ymin + hs / 2.
+
+    keep_mask = tf.logical_and(tf.greater(ws, min_size), tf.greater(hs, min_size))
+    keep_mask = tf.logical_and(keep_mask, tf.greater(x_ctr, 0.))
+    keep_mask = tf.logical_and(keep_mask, tf.greater(y_ctr, 0.))
+    keep_mask = tf.logical_and(keep_mask, tf.less(x_ctr, 1.))
+    keep_mask = tf.logical_and(keep_mask, tf.less(y_ctr, 1.))
+
+    return tf.boolean_mask(scores, keep_mask), tf.boolean_mask(labels, keep_mask), tf.boolean_mask(bboxes, keep_mask)
+li = ["2007_000027.jpg",
+"2007_000032.jpg",
+"2007_000033.jpg",
+"2007_000039.jpg",
+"2007_000042.jpg",
+"2007_000061.jpg",
+"2007_000063.jpg",
+"2007_000068.jpg",
+"2007_000121.jpg",
+"2007_000123.jpg",
+"2007_000129.jpg",
+"2007_000170.jpg",
+"2007_000175.jpg",
+"2007_000187.jpg",
+"2007_000241.jpg",
+"2007_000243.jpg",
+"2007_000250.jpg",
+"2007_000256.jpg",
+"2007_000272.jpg",
+"2007_000323.jpg",
+"2007_000332.jpg",
+"2007_000333.jpg",
+"2007_000346.jpg",
+"2007_000363.jpg",
+"2007_000364.jpg",
+"2007_000392.jpg",
+"2007_000423.jpg",
+"2007_000452.jpg",
+"2007_000464.jpg",
+"2007_000480.jpg",
+"2007_000491.jpg",
+"2007_000504.jpg",
+"2007_000515.jpg",
+"2007_000528.jpg",
+"2007_000529.jpg",
+"2007_000549.jpg",
+"2007_000559.jpg",
+"2007_000572.jpg",
+"2007_000584.jpg",
+"2007_000629.jpg",
+"2007_000636.jpg",
+"2007_000645.jpg",
+"2007_000648.jpg",
+"2007_000661.jpg",
+"2007_000663.jpg",
+"2007_000664.jpg",
+"2007_000676.jpg",
+"2007_000713.jpg",
+"2007_000720.jpg",
+"2007_000727.jpg",
+"2007_000733.jpg",
+"2007_000738.jpg",
+"2007_000762.jpg",
+"2007_000768.jpg",
+"2007_000783.jpg",
+"2007_000793.jpg",
+"2007_000799.jpg",
+"2007_000804.jpg",
+"2007_000807.jpg",
+"2007_000822.jpg",
+"2007_000830.jpg",
+"2007_000836.jpg",
+"2007_000837.jpg",
+"2007_000847.jpg",
+"2007_000862.jpg",
+"2007_000876.jpg",
+"2007_000904.jpg",
+"2007_000925.jpg",
+"2007_000999.jpg",
+"2007_001027.jpg",
+"2007_001073.jpg",
+"2007_001149.jpg",
+"2007_001154.jpg",
+"2007_001175.jpg",
+"2007_001185.jpg",
+"2007_001225.jpg",
+"2007_001239.jpg",
+"2007_001284.jpg",
+"2007_001288.jpg",
+"2007_001289.jpg",
+"2007_001299.jpg",
+"2007_001311.jpg",
+"2007_001321.jpg",
+"2007_001340.jpg",
+"2007_001377.jpg",
+"2007_001397.jpg",
+"2007_001408.jpg",
+"2007_001416.jpg",
+"2007_001420.jpg",
+"2007_001423.jpg",
+"2007_001430.jpg",
+"2007_001439.jpg",
+"2007_001457.jpg",
+"2007_001458.jpg",
+"2007_001487.jpg",
+"2007_001526.jpg",
+"2007_001558.jpg",
+"2007_001568.jpg",
+"2007_001583.jpg",
+"2007_001585.jpg",
+"2007_001586.jpg",
+"2007_001587.jpg",
+"2007_001594.jpg",
+"2007_001595.jpg",
+"2007_001602.jpg",
+"2007_001609.jpg",
+"2007_001627.jpg",
+"2007_001630.jpg",
+"2007_001667.jpg",
+"2007_001677.jpg",
+"2007_001678.jpg",
+"2007_001686.jpg",
+"2007_001698.jpg",
+"2007_001704.jpg",
+"2007_001709.jpg",]
+def _process_image(directory, name):
+    # Read the image file.
+    #filename = os.path.join(directory, 'JPEGImages/' + name + '.jpg')
+    filename = os.path.join(directory, 'JPEGImages/' + name + '.jpg')
+    image_data = imread(filename, mode ='RGB')
+
+    # Read the XML annotation file.
+    filename = os.path.join(directory, 'Annotations/', name + '.xml')
+    tree = ET.parse(filename)
+    root = tree.getroot()
+
+    # Image shape.
+    size = root.find('size')
+    shape = [int(size.find('height').text),
+             int(size.find('width').text)]
+    # Find annotations.
+    bboxes = []
+    labels = []
+    for obj in root.findall('object'):
+        label = obj.find('name').text
+        labels.append(int(pascalvoc_common.VOC_LABELS[label][0]))
+
+        bbox = obj.find('bndbox')
+        bboxes.append([float(bbox.find('ymin').text) / shape[0],
+                       float(bbox.find('xmin').text) / shape[1],
+                       float(bbox.find('ymax').text) / shape[0],
+                       float(bbox.find('xmax').text) / shape[1]
+                       ])
+    return image_data, shape, labels, bboxes
 
 
 # =========================================================================== #
@@ -126,45 +543,29 @@ def main(_):
     if not FLAGS.dataset_dir:
         raise ValueError('You must supply the dataset directory with --dataset_dir')
 
-    tf.logging.set_verbosity(tf.logging.DEBUG)
+    tf.logging.set_verbosity(tf.logging.INFO)
     with tf.Graph().as_default():
-        # Select the dataset.
-        dataset = dataset_factory.get_dataset(
-            FLAGS.dataset_name, FLAGS.dataset_split_name, FLAGS.dataset_dir)
-
         # Get the RON network and its anchors.
         ron_class = nets_factory.get_network(FLAGS.model_name)
         ron_params = ron_class.default_params._replace(num_classes=FLAGS.num_classes)
         ron_net = ron_class(ron_params)
         ron_shape = ron_net.params.img_shape
         ron_anchors = ron_net.anchors(ron_shape)
-
-        tf_utils.print_configuration(FLAGS.__flags, ron_params,
-                                     dataset.data_sources, FLAGS.test_dir)
-        # =================================================================== #
-        # Create a dataset provider and batches.
-        # =================================================================== #
-        with tf.name_scope(FLAGS.dataset_name + '_data_provider'):
-            provider = slim.dataset_data_provider.DatasetDataProvider(
-                dataset,
-                num_readers=FLAGS.num_readers,
-                common_queue_capacity=20,
-                common_queue_min=10,
-                shuffle=True)
         # Get for RON network: image, labels, bboxes.
         # (ymin, xmin, ymax, xmax) fro gbboxes
-        [image, shape, glabels, gbboxes] = provider.get(['image', 'shape',
-                                                         'object/label',
-                                                         'object/bbox'])
-        #### DEBUG ####
-        #image = tf.Print(image, [shape, glabels, gbboxes], message='before preprocess: ', summarize=20)
+
+        image_input = tf.placeholder(tf.int32, shape=(None, None, 3))
+        shape_input = tf.placeholder(tf.int32, shape=(2,))
+        glabels_input = tf.placeholder(tf.int32, shape=(None,))
+        gbboxes_input = tf.placeholder(tf.float32, shape=(None, 4))
+
         # Select the preprocessing function.
         preprocessing_name = FLAGS.preprocessing_name or FLAGS.model_name
         image_preprocessing_fn = preprocessing_factory.get_preprocessing(
             preprocessing_name, is_training=False)
 
         # Pre-processing image, labels and bboxes.
-        image, glabels, gbboxes, bbox_img = image_preprocessing_fn(image, glabels, gbboxes,
+        image, glabels, gbboxes, bbox_img = image_preprocessing_fn(image_input, glabels_input, gbboxes_input,
                                    out_shape=ron_shape,
                                    data_format=DATA_FORMAT)
 
@@ -175,23 +576,19 @@ def main(_):
         arg_scope = ron_net.arg_scope(data_format=DATA_FORMAT)
         with slim.arg_scope(arg_scope):
             predictions, _, objness_pred, _, localisations, _ = ron_net.net(tf.expand_dims(image, axis=0), is_training=False)
-            localisations = ron_net.bboxes_decode(localisations, ron_anchors)
-            flaten_scores, flaten_cutoff_scores, flaten_locations, _ = flaten_predict(predictions, objness_pred, localisations)
-        # dict from class index to scores or bboxes those are selected depends on threshold
-        # scores or bboxes in different layers are all concated together
-        dict_scores, dict_bboxes = ssd_common.tf_ssd_bboxes_select(
-                flaten_cutoff_scores, flaten_locations, select_threshold=FLAGS.select_threshold, num_classes=21, ignore_class=0)
+            bboxes = ron_net.bboxes_decode(localisations, ron_anchors)
 
-        dict_bboxes = tfe.bboxes.bboxes_clip(bbox_img, dict_bboxes)
-        dict_scores, dict_bboxes = tfe.bboxes.bboxes_sort(dict_scores, dict_bboxes,
-                                                            top_k=FLAGS.nms_topk * 10)
-        dict_scores, dict_bboxes = tfe.bboxes.bboxes_nms_batch(dict_scores, dict_bboxes, nms_threshold=FLAGS.nms_threshold, keep_top_k=FLAGS.nms_topk)
+            flaten_scores, flaten_labels, flaten_bboxes = flaten_predict(predictions, objness_pred, bboxes)
+            #objness_pred = tf.reduce_max(tf.cast(tf.greater(objness_pred[-1], FLAGS.objectness_thres), tf.float32))
+
+        flaten_bboxes = tfe.bboxes.bboxes_clip(bbox_img, flaten_bboxes)
+        flaten_scores, flaten_labels, flaten_bboxes = filter_boxes(flaten_scores, flaten_labels, flaten_bboxes, 0.03, shape_input, [320., 320.])
+
+        #flaten_scores, flaten_labels, flaten_bboxes = tf_bboxes_nms_by_class(flaten_scores, flaten_labels, flaten_bboxes, nms_threshold=FLAGS.nms_threshold, keep_top_k=FLAGS.nms_topk_percls, mode = 'union')
+        flaten_scores, flaten_labels, flaten_bboxes = tf_bboxes_nms(flaten_scores, flaten_labels, flaten_bboxes, nms_threshold=FLAGS.nms_threshold, keep_top_k=FLAGS.nms_topk, mode = 'union')
+
         # Resize bboxes to original image shape.
-        dict_bboxes = tfe.bboxes.bboxes_resize(bbox_img, dict_bboxes)
-
-        flaten_nms_scores = tf.concat(list(dict_scores.values()), axis=-1)
-        flaten_nms_bboxes = tf.concat(list(dict_bboxes.values()), axis=-2)
-        class_labels = [label for label in dict_scores.keys() for _ in range(FLAGS.nms_topk)]
+        flaten_bboxes = tfe.bboxes.bboxes_resize(bbox_img, flaten_bboxes)
 
         # configure model restore
         if tf.gfile.IsDirectory(FLAGS.checkpoint_path):
@@ -227,34 +624,88 @@ def main(_):
         sv = tf.train.Supervisor(logdir=FLAGS.test_dir, init_fn = init_fn, init_op = init_op, summary_op = None, save_model_secs=0)
 
         gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction = FLAGS.gpu_memory_fraction)
-        config = tf.ConfigProto(log_device_placement = True, allow_soft_placement=True, intra_op_parallelism_threads = FLAGS.num_cpu_threads, inter_op_parallelism_threads = FLAGS.num_cpu_threads, gpu_options = gpu_options)
+        config = tf.ConfigProto(log_device_placement = False, allow_soft_placement=True, intra_op_parallelism_threads = FLAGS.num_cpu_threads, inter_op_parallelism_threads = FLAGS.num_cpu_threads, gpu_options = gpu_options)
 
         cur_step = 0
         tf.logging.info(datetime.now().strftime('Evaluation Start: %Y-%m-%d %H:%M:%S'))
+
+        detector_eval = voc_eval.DetectorEvalPascal('../PASCAL/VOC2007TEST/', './eval_logs/', set_type = 'test')
+        num_images = pascalvoc_2007.SPLITS_TO_SIZES['test']
+
+        # all detections are collected into:
+        #    all_boxes[cls][image] = N x 5 array of detections in
+        #    (x1, y1, x2, y2, score)
+        all_boxes = [[[] for _ in range(num_images)] for _ in range(len(pascalvoc_common.VOC_CLASSES)+1)]
+        output_dir = detector_eval.output_dir
+        det_file = os.path.join(output_dir, 'detections.pkl')
 
         with sv.managed_session(config=config) as sess:
             while True:
                 if sv.should_stop():
                     tf.logging.info('Supervisor emited finish!')
                     break
-
+                if cur_step >= len(detector_eval.image_ids):
+                    break
                 start_time = time.time()
+
+                input_datas = _process_image(detector_eval.image_ids[cur_step][0], detector_eval.image_ids[cur_step][1])
                 with tf.device('/gpu:0'):
-                    image_input_ , _, _, scores_, bboxes_ = sess.run([image, glabels, gbboxes, flaten_nms_scores, flaten_nms_bboxes])
-                    # print(image_input_)
+                    image_, shape_, _, _, scores_, labels_, bboxes_ = sess.run([image, shape_input, glabels, gbboxes, flaten_scores, flaten_labels, flaten_bboxes], feed_dict={image_input: input_datas[0],
+                                    shape_input: input_datas[1],
+                                    glabels_input: input_datas[2],
+                                    gbboxes_input: input_datas[3]})
+                    # print(image_)
+
+                    # print(len(a),a[0].shape,a[1].shape,a[2].shape,a[3].shape)
+                    # print(len(b),b[0].shape,b[1].shape,b[2].shape,b[3].shape)
+                    # print(len(c),c[0].shape,c[1].shape,c[2].shape,c[3].shape)
                     print(scores_)
+                    print(labels_)
                     print(bboxes_)
-                    img_to_draw = np.copy(preprocessing_factory.ssd_vgg_preprocessing.np_image_unwhitened(image_input_))
-                    img_to_draw = draw_toolbox.bboxes_draw_on_img(img_to_draw, class_labels, scores_[0], bboxes_[0], thickness=2)
+                    # print(a)
+                    # print(FLAGS.objectness_thres)
+                    img_to_draw = np.copy(preprocessing_factory.ssd_vgg_preprocessing.np_image_unwhitened(image_))
+                    img_to_draw = draw_toolbox.bboxes_draw_on_img(img_to_draw, labels_, scores_, bboxes_, thickness=2)
                     imsave('./Debug/{}.jpg'.format(cur_step), img_to_draw)
+
+                unique_labels = []
+                for l in labels_:
+                   if l not in unique_labels:
+                      unique_labels.append(l)
+                print('unique_labels:', unique_labels)
+                # skip j = 0, because it's the background class
+                for j in unique_labels:
+                    mask = labels_ == j
+                    boxes = bboxes_[mask]
+                    # all detections are collected into:
+                    #    all_boxes[cls][image] = N x 5 array of detections in
+                    #    (x1, y1, x2, y2, score)
+                    boxes[:, 0] *= shape_[0]
+                    boxes[:, 2] *= shape_[0]
+                    boxes[:, 1] *= shape_[1]
+                    boxes[:, 3] *= shape_[1]
+
+                    boxes[:,[0, 1]] = boxes[:,[1, 0]]
+                    boxes[:,[2, 3]] = boxes[:,[3, 2]]
+                    scores = scores_[mask]
+
+                    cls_dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+                    print(cls_dets)
+                    all_boxes[j][cur_step] = cls_dets
+
                 time_elapsed = time.time() - start_time
                 if cur_step % FLAGS.log_every_n_steps == 0:
-                    tf.logging.info('Eval Speed: {:5.3f}sec/image'.format(time_elapsed))
+                    tf.logging.info('Eval Speed: {:5.3f}sec/image, {}/{}'.format(time_elapsed, cur_step, len(detector_eval.image_ids)))
 
                 cur_step += 1
+
+
+        with open(det_file, 'wb') as f:
+            pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
+
+        detector_eval.evaluate_detections(all_boxes)
 
         tf.logging.info(datetime.now().strftime('Evaluation Finished: %Y-%m-%d %H:%M:%S'))
 
 if __name__ == '__main__':
     tf.app.run()
-

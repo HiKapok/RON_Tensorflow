@@ -14,7 +14,6 @@
 # ==============================================================================
 """Pre-processing images for SSD-type networks.
 """
-from enum import Enum, IntEnum
 import numpy as np
 
 import tensorflow as tf
@@ -26,12 +25,6 @@ from preprocessing import tf_image
 from nets import ssd_common
 
 slim = tf.contrib.slim
-
-# Resizing strategies.
-Resize = IntEnum('Resize', ('NONE',                # Nothing!
-                            'CENTRAL_CROP',        # Crop (and pad if necessary).
-                            'PAD_AND_RESIZE',      # Pad, and resize to output shape.
-                            'WARP_RESIZE'))        # Warp resize.
 
 # VGG mean parameters.
 _R_MEAN = 123.
@@ -301,10 +294,69 @@ def preprocess_for_train(image, labels, bboxes,
             image = tf.transpose(image, perm=(2, 0, 1))
         return image, labels, bboxes
 
+def ron_preprocess_for_train(image, labels, bboxes,
+                         out_shape, data_format='NHWC',
+                         scope='ron_preprocessing_train'):
+    """Preprocesses the given image for training.
+
+    Note that the actual resizing scale is sampled from
+        [`resize_size_min`, `resize_size_max`].
+
+    Args:
+        image: A `Tensor` representing an image of arbitrary size.
+        output_height: The height of the image after preprocessing.
+        output_width: The width of the image after preprocessing.
+        resize_side_min: The lower bound for the smallest side of the image for
+            aspect-preserving resizing.
+        resize_side_max: The upper bound for the smallest side of the image for
+            aspect-preserving resizing.
+
+    Returns:
+        A preprocessed image.
+    """
+    fast_mode = False
+    with tf.name_scope(scope, 'ron_preprocessing_train', [image, labels, bboxes]):
+        if image.get_shape().ndims != 3:
+            raise ValueError('Input must be of size [height, width, C>0]')
+        # Convert to float scaled [0, 1].
+        if image.dtype != tf.float32:
+            image = tf.image.convert_image_dtype(image, dtype=tf.float32)
+        tf_summary_image(image, bboxes, 'image_with_bboxes_0')
+
+        image, bboxes = control_flow_ops.cond(tf.random_uniform([1], minval=0., maxval=1., dtype=tf.float32)[0] < 0.5, lambda: (image, bboxes), lambda: tf_image.ssd_random_expand(image, bboxes, 2))
+        tf_summary_image(image, bboxes, 'image_on_canvas_1')
+
+        # Distort image and bounding boxes.
+        random_sample_image, labels, bboxes = tf_image.ssd_random_sample_patch(image, labels, bboxes)
+        tf_summary_image(random_sample_image, bboxes, 'image_shape_distorted_2')
+
+        # Randomly flip the image horizontally.
+        random_sample_flip_image, bboxes = tf_image.random_flip_left_right(random_sample_image, bboxes)
+
+        random_sample_flip_resized_image = tf_image.resize_image(random_sample_flip_image, out_shape,
+                                          method=tf.image.ResizeMethod.BILINEAR,
+                                          align_corners=False)
+
+        tf_summary_image(random_sample_flip_resized_image, bboxes, 'image_fliped_and_resized_3')
+
+        # Randomly distort the colors. There are 4 ways to do it.
+        dst_image = apply_with_random_selector(
+                random_sample_flip_resized_image,
+                lambda x, ordering: distort_color(x, ordering, fast_mode),
+                num_cases=4)
+        tf_summary_image(dst_image, bboxes, 'image_color_distorted_4')
+
+        # Rescale to VGG input scale.
+        image = dst_image * 255.
+        image = tf_image_whitened(image, [_R_MEAN, _G_MEAN, _B_MEAN])
+        # Image data format.
+        if data_format == 'NCHW':
+            image = tf.transpose(image, perm=(2, 0, 1))
+        return image, labels, bboxes
 
 def preprocess_for_eval(image, labels, bboxes,
                         out_shape=EVAL_SIZE, data_format='NHWC',
-                        difficults=None, resize=Resize.WARP_RESIZE,
+                        difficults=None, resize='WARP_RESIZE',
                         scope='ssd_preprocessing_train'):
     """Preprocess an image for evaluation.
 
@@ -330,14 +382,14 @@ def preprocess_for_eval(image, labels, bboxes,
         else:
             bboxes = tf.concat([bbox_img, bboxes], axis=0)
 
-        if resize == Resize.NONE:
+        if resize == 'NONE':
             # No resizing...
             pass
-        elif resize == Resize.CENTRAL_CROP:
+        elif resize == 'CENTRAL_CROP':
             # Central cropping of the image.
             image, bboxes = tf_image.resize_image_bboxes_with_crop_or_pad(
                 image, bboxes, out_shape[0], out_shape[1])
-        elif resize == Resize.PAD_AND_RESIZE:
+        elif resize == 'PAD_AND_RESIZE':
             # Resize image first: find the correct factor...
             shape = tf.shape(image)
             factor = tf.minimum(tf.to_double(1.0),
@@ -352,7 +404,7 @@ def preprocess_for_eval(image, labels, bboxes,
             # Pad to expected size.
             image, bboxes = tf_image.resize_image_bboxes_with_crop_or_pad(
                 image, bboxes, out_shape[0], out_shape[1])
-        elif resize == Resize.WARP_RESIZE:
+        elif resize == 'WARP_RESIZE':
             # Warp resize of the image.
             image = tf_image.resize_image(image, out_shape,
                                           method=tf.image.ResizeMethod.BILINEAR,
@@ -399,7 +451,7 @@ def preprocess_image(image,
       A preprocessed image.
     """
     if is_training:
-        return preprocess_for_train(image, labels, bboxes,
+        return ron_preprocess_for_train(image, labels, bboxes,
                                     out_shape=out_shape,
                                     data_format=data_format)
     else:
