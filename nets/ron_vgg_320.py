@@ -73,6 +73,7 @@ RONParams = namedtuple('SSDParameters', ['img_shape',
                                          'no_annotation_label',
                                          'feat_layers',
                                          'feat_shapes',
+                                         'allowed_borders',
                                          'anchor_sizes',
                                          'anchor_ratios',
                                          'anchor_steps',
@@ -98,6 +99,7 @@ class RONNet(object):
         no_annotation_label=21,
         feat_layers=['block7','block6', 'block5', 'block4'],
         feat_shapes=[(5, 5), (10, 10), (20, 20), (40, 40)],
+        allowed_borders = [32, 16, 8, 4],
         anchor_sizes=[(224., 256.),
                       (160., 192.),
                       (96., 128.),
@@ -116,7 +118,7 @@ class RONNet(object):
         # anchor_ratios=[[1, 2, 3, 1./2, 1./3]],
         # anchor_steps=[64],
 
-        anchor_offset=0.5,
+        anchor_offset=16.,
         prior_scaling=[0.1, 0.1, 0.2, 0.2]
         )
 
@@ -174,6 +176,8 @@ class RONNet(object):
         return ssd_common.tf_ssd_bboxes_encode(
             labels, bboxes, anchors,
             self.params.num_classes,
+            self.params.img_shape,
+            self.params.allowed_borders,
             self.params.no_annotation_label,
             positive_threshold = positive_threshold,
             ignore_threshold = ignore_threshold,
@@ -242,7 +246,7 @@ def ron_anchor_one_layer(img_shape,
                          sizes,
                          ratios,
                          step,
-                         offset=0.5,
+                         offset=16,
                          dtype=np.float32):
     """Computer RON default anchor boxes for one feature layer.
 
@@ -265,8 +269,8 @@ def ron_anchor_one_layer(img_shape,
     # y = (y.astype(dtype) + offset) / feat_shape[0]
     # x = (x.astype(dtype) + offset) / feat_shape[1]
     y, x = np.mgrid[0:feat_shape[0], 0:feat_shape[1]]
-    y = (y.astype(dtype) + offset) * step / img_shape[0]
-    x = (x.astype(dtype) + offset) * step / img_shape[1]
+    y = (y.astype(dtype) * step + offset) / img_shape[0]
+    x = (x.astype(dtype) * step + offset) / img_shape[1]
 
     # Expand dims to support easy broadcasting.
     y = np.expand_dims(y, axis=-1)
@@ -291,7 +295,7 @@ def ron_anchors_all_layers(img_shape,
                            anchor_sizes,
                            anchor_ratios,
                            anchor_steps,
-                           offset=0.5,
+                           offset=16.,
                            dtype=np.float32):
     """Compute anchor boxes for all feature layers.
     """
@@ -552,7 +556,7 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         # negtive examples are those max_overlap is still lower than neg_threshold, note that some positive may also has lower jaccard
 
         #negtive_mask = tf.cast(tf.logical_not(positive_mask), dtype) * gscores < neg_threshold
-        negtive_mask = tf.logical_and(tf.logical_not(positive_mask), gscores < neg_threshold)
+        negtive_mask = tf.logical_and(tf.logical_not(tf.logical_or(positive_mask, gclasses < 0)), gscores < neg_threshold)
         #negtive_mask = tf.logical_and(gscores < neg_threshold, tf.logical_not(positive_mask))
         fnegtive_mask = tf.cast(negtive_mask, dtype)
         n_negtives = tf.reduce_sum(fnegtive_mask)
@@ -595,8 +599,8 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         # random selected negtive mask
         rand_cls_neg_mask = tf.random_uniform(tfe.get_shape(gscores, 1), minval=0, maxval=1.) < tfe.safe_divide(tf.cast(n_cls_neg_to_select, dtype), n_cls_negtives, name='rand_select_cls')
         # include both random_select negtive and all positive(positive is filtered by objectness)
-        final_cls_neg_maks_objness = tf.stop_gradient(tf.logical_or(tf.logical_and(cls_negtive_mask, rand_cls_neg_mask), cls_positive_mask))
-        total_examples_for_cls = tf.reduce_sum(tf.cast(final_cls_neg_maks_objness, dtype))
+        final_cls_neg_mask_objness = tf.stop_gradient(tf.logical_or(tf.logical_and(cls_negtive_mask, rand_cls_neg_mask), cls_positive_mask))
+        total_examples_for_cls = tf.reduce_sum(tf.cast(final_cls_neg_mask_objness, dtype))
 
         # n_cls_neg_to_select = tf.Print(n_cls_neg_to_select, [n_cls_neg_to_select], message='n_cls_neg_to_select: ', summarize=20)
         # n_cls_positives = tf.Print(n_cls_positives, [n_cls_positives], message='n_cls_positives: ', summarize=20)
@@ -605,10 +609,10 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
 
         # Add cross-entropy loss.
         with tf.name_scope('cross_entropy_pos'):
-            #weights = (1. - alpha - beta) * tf.cast(final_cls_neg_maks_objness, dtype)
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.stop_gradient(gclasses))
+            #weights = (1. - alpha - beta) * tf.cast(final_cls_neg_mask_objness, dtype)
+            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.stop_gradient(tf.clip_by_value(gclasses, 0, num_classes)))
 
-            loss = tf.cond(n_positives > 0., lambda: (1. - alpha - beta) * tf.reduce_mean(tf.boolean_mask(loss, final_cls_neg_maks_objness)), lambda: 0.)
+            loss = tf.cond(n_positives > 0., lambda: (1. - alpha - beta) * tf.reduce_mean(tf.boolean_mask(loss, final_cls_neg_mask_objness)), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)
             #loss = tfe.safe_divide(tf.reduce_sum(loss * weights), total_examples_for_cls, name='cls_loss')

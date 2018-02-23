@@ -347,6 +347,7 @@ def ron_preprocess_for_train(image, labels, bboxes,
         tf_summary_image(dst_image, bboxes, 'image_color_distorted_4')
 
         # Rescale to VGG input scale.
+        dst_image.set_shape([None, None, 3])
         image = dst_image * 255.
         image = tf_image_whitened(image, [_R_MEAN, _G_MEAN, _B_MEAN])
         # Image data format.

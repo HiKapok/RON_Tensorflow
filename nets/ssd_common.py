@@ -26,6 +26,8 @@ def tf_ssd_bboxes_encode_layer(labels,
                                bboxes,
                                anchors_layer,
                                num_classes,
+                               img_shape,
+                               allowed_border,
                                no_annotation_label,
                                positive_threshold = 0.5,
                                ignore_threshold = 0.3,
@@ -51,6 +53,11 @@ def tf_ssd_bboxes_encode_layer(labels,
     ymax = yref + href / 2.
     xmax = xref + wref / 2.
     vol_anchors = (xmax - xmin) * (ymax - ymin)
+
+    inside_mask = tf.logical_and(tf.logical_and(tf.constant(ymin) >= -allowed_border*1./img_shape[0],
+                                                          tf.constant(xmin) >= -allowed_border*1./img_shape[1]),
+                                                          tf.logical_and(tf.constant(ymax) < (img_shape[0] + allowed_border)*1./img_shape[0],
+                                                          tf.constant(xmax) < (img_shape[1] + allowed_border)*1./img_shape[1]))
 
     # Initialize tensors...
     shape = (yref.shape[0], yref.shape[1], href.size)
@@ -116,7 +123,7 @@ def tf_ssd_bboxes_encode_layer(labels,
         label = labels[i]
         bbox = bboxes[i]
         # current ground_truth's overlap with all others' anchors
-        jaccard = jaccard_with_anchors(bbox)
+        jaccard = tf.cast(inside_mask, dtype) * jaccard_with_anchors(bbox)
         # the index of the max overlap for current ground_truth
         max_jaccard = tf.reduce_max(jaccard)
         cur_max_indice_mask = tf.equal(jaccard, max_jaccard)
@@ -166,6 +173,9 @@ def tf_ssd_bboxes_encode_layer(labels,
                                             feat_ymax, feat_xmax, max_mask], parallel_iterations=16,
                                                                             back_prop=False,
                                                                             swap_memory=True)
+
+    inside_int_mask = tf.cast(inside_mask, tf.int64)
+    feat_labels =  (1 - inside_int_mask) * -1 + inside_int_mask * feat_labels
     # Transform to center / size.
     feat_cy = (feat_ymax + feat_ymin) / 2.
     feat_cx = (feat_xmax + feat_xmin) / 2.
@@ -188,6 +198,8 @@ def tf_ssd_bboxes_encode(labels,
                          bboxes,
                          anchors,
                          num_classes,
+                         img_shape,
+                         allowed_borders,
                          no_annotation_label,
                          positive_threshold = 0.5,
                          ignore_threshold=0.3,
@@ -216,7 +228,7 @@ def tf_ssd_bboxes_encode(labels,
             with tf.name_scope('bboxes_encode_block_%i' % i):
                 t_labels, t_loc, t_scores = \
                     tf_ssd_bboxes_encode_layer(labels, bboxes, anchors_layer,
-                                               num_classes, no_annotation_label,
+                                               num_classes, img_shape, allowed_borders[i], no_annotation_label,
                                                positive_threshold, ignore_threshold,
                                                prior_scaling, dtype)
                 target_labels.append(t_labels)
