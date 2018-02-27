@@ -106,9 +106,9 @@ tf.app.flags.DEFINE_string(
     'exponential',
     'Specifies how the learning rate is decayed. One of "fixed", "exponential",'
     ' or "polynomial"')
-tf.app.flags.DEFINE_float('learning_rate', 0.0012, 'Initial learning rate.')
+tf.app.flags.DEFINE_float('learning_rate', 0.001, 'Initial learning rate.')
 tf.app.flags.DEFINE_float(
-    'end_learning_rate', 0.00008,
+    'end_learning_rate', 0.00001,
     'The minimal end learning rate used by a polynomial decay learning rate.')
 tf.app.flags.DEFINE_float(
     'label_smoothing', 0.0, 'The amount of label smoothing.')
@@ -132,7 +132,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'dataset_split_name', 'train', 'The name of the train/test split.')
 tf.app.flags.DEFINE_string(
-    'data_dir', '../PASCAL/tfrecords/VOC0712', 'The directory where the dataset files are stored.')
+    'data_dir', '../PASCAL/VOC_TF/VOC0712TF/', 'The directory where the dataset files are stored.')
 tf.app.flags.DEFINE_integer(
     'labels_offset', 0,
     'An offset for the labels in the dataset. This flag is primarily used to '
@@ -144,7 +144,7 @@ tf.app.flags.DEFINE_string(
     'preprocessing_name', None, 'The name of the preprocessing to use. If left '
     'as `None`, then the model_name flag is used.')
 tf.app.flags.DEFINE_integer(
-    'batch_size', 16, 'The number of samples in each batch.')
+    'batch_size', 24, 'The number of samples in each batch.')
 tf.app.flags.DEFINE_integer(
     'train_image_size', None, 'Train image size')
 tf.app.flags.DEFINE_integer('max_number_of_steps', None,
@@ -154,7 +154,7 @@ tf.app.flags.DEFINE_integer('max_number_of_steps', None,
 # Fine-Tuning Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', None, #'./checkpoints/ssd_300_vgg.ckpt',
+    'checkpoint_path', None, #'../vgg_model/vgg16_reducedfc.ckpt',
     'The path to a checkpoint from which to fine-tune.')
 tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', 'vgg_16',#None,
@@ -300,9 +300,15 @@ def main(_):
             # =================================================================== #
             # Configure the optimization procedure.
             # =================================================================== #
-            learning_rate = tf_utils.configure_learning_rate(FLAGS,
-                                                             dataset.num_samples,
-                                                             global_step)
+            # learning_rate = tf_utils.configure_learning_rate(FLAGS,
+            #                                                  dataset.num_samples,
+            #                                                  global_step)
+
+            lr_values = [FLAGS.learning_rate * decay for decay in [1., 0.1, 0.001]]
+            learning_rate_ = tf.train.piecewise_constant(tf.cast(global_step, tf.int32), [90000, 115000], lr_values)
+            learning_rate = tf.maximum(learning_rate_, tf.constant(FLAGS.end_learning_rate, dtype=learning_rate_.dtype))
+
+
             optimizer = tf_utils.configure_optimizer(FLAGS, learning_rate)
 
             if FLAGS.moving_average_decay:
@@ -352,7 +358,7 @@ def main(_):
                 logdir=FLAGS.model_dir,
                 master='',
                 is_chief=True,
-                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_16.ckpt')),
+                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_model/vgg16_reducedfc.ckpt')),
                 summary_op=summary_op,
                 number_of_steps=FLAGS.max_number_of_steps,
                 log_every_n_steps=FLAGS.log_every_n_steps,

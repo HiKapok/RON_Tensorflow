@@ -14,5 +14,8 @@ update:
 - Add nms using Tensorflow ops to support two mode
 - Replica GPU training support (If you are using Tensorflow 1.5.0+, then remove the replicate_model\_fn.py)
 - Add voc eval
+- Add realtime eval, using class-wise bboxes select and nms
+- Training use vgg16_reducedfc model converted from pytorch, you can get from [this](https://drive.google.com/open?id=184srhbt8_uvLKeWW_Yo8Mc5wTyc0lJT7)
+- Other fixes
 
 Note: Training is in process, and the model will be released later.
