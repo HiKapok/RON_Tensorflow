@@ -128,7 +128,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'dataset_split_name', 'train', 'The name of the train/test split.')
 tf.app.flags.DEFINE_string(
-    'data_dir', '../PASCAL/tfrecords/VOC0712', 'The directory where the dataset files are stored.')
+    'data_dir', '../PASCAL/VOC_TF/VOC0712TF/', 'The directory where the dataset files are stored.')
 tf.app.flags.DEFINE_integer(
     'labels_offset', 0,
     'An offset for the labels in the dataset. This flag is primarily used to '
@@ -140,7 +140,7 @@ tf.app.flags.DEFINE_string(
     'preprocessing_name', None, 'The name of the preprocessing to use. If left '
     'as `None`, then the model_name flag is used.')
 tf.app.flags.DEFINE_integer(
-    'batch_size', 4, 'The number of samples in each batch.')
+    'batch_size', 16, 'The number of samples in each batch.')
 tf.app.flags.DEFINE_integer(
     'train_image_size', None, 'Train image size')
 tf.app.flags.DEFINE_integer('max_number_of_steps', None,
@@ -156,7 +156,7 @@ tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', 'vgg_16',#None,
     'Model scope in the checkpoint. None if the same as the trained model.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module, ron_320_vgg/conv6, ron_320_vgg/conv7',#None,
+    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module,#None,
     'Comma-separated list of scopes of variables to exclude when restoring '
     'from a checkpoint.')
 tf.app.flags.DEFINE_string(
@@ -174,7 +174,7 @@ tf.app.flags.DEFINE_integer("task_index", None,
                      "Worker task index, should be >= 0. task_index=0 is "
                      "the master worker task performs the variable "
                      "initialization ")
-tf.app.flags.DEFINE_integer("num_gpus", 4,
+tf.app.flags.DEFINE_integer("num_gpus", 2,
                      "Total number of gpus for each machine worker."
                      "If you don't use GPU, please set it to '0'")
 # for sync_replicas mode only

@@ -154,13 +154,13 @@ tf.app.flags.DEFINE_integer('max_number_of_steps', None,
 # Fine-Tuning Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', None, #'../vgg_model/vgg16_reducedfc.ckpt',
+    'checkpoint_path', None,#None, #'../vgg_model/reduced/vgg16_reducedfc.ckpt'
     'The path to a checkpoint from which to fine-tune.')
 tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', 'vgg_16',#None,
     'Model scope in the checkpoint. None if the same as the trained model.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module, ron_320_vgg/conv6, ron_320_vgg/conv7',#None,
+    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module',#None,
     'Comma-separated list of scopes of variables to exclude when restoring '
     'from a checkpoint.')
 tf.app.flags.DEFINE_string(
@@ -344,6 +344,7 @@ def main(_):
             # =================================================================== #
             gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction = FLAGS.gpu_memory_fraction)
             config = tf.ConfigProto(allow_soft_placement=True, log_device_placement = False, intra_op_parallelism_threads = FLAGS.num_cpu_threads, inter_op_parallelism_threads = FLAGS.num_cpu_threads, gpu_options = gpu_options)
+
             saver = tf.train.Saver(max_to_keep=5,
                                    keep_checkpoint_every_n_hours = FLAGS.save_interval_secs/3600.,
                                    write_version=2,
@@ -358,7 +359,7 @@ def main(_):
                 logdir=FLAGS.model_dir,
                 master='',
                 is_chief=True,
-                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_model/vgg16_reducedfc.ckpt')),
+                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_16.ckpt')),
                 summary_op=summary_op,
                 number_of_steps=FLAGS.max_number_of_steps,
                 log_every_n_steps=FLAGS.log_every_n_steps,

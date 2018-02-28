@@ -157,7 +157,7 @@ tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', 'vgg_16',#None,
     'Model scope in the checkpoint. None if the same as the trained model.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module, ron_320_vgg/conv6, ron_320_vgg/conv7',#None,
+    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module',#None,
     'Comma-separated list of scopes of variables to exclude when restoring '
     'from a checkpoint.')
 tf.app.flags.DEFINE_string(

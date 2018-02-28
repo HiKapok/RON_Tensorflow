@@ -62,10 +62,10 @@ tf.app.flags.DEFINE_string(
     'model_dir', './logs/',
     'Directory where checkpoints and event logs are written to.')
 tf.app.flags.DEFINE_integer(
-    'num_readers', 16,
+    'num_readers', 8,
     'The number of parallel readers that read data from the dataset.')
 tf.app.flags.DEFINE_integer(
-    'num_preprocessing_threads', 42,
+    'num_preprocessing_threads', 16,
     'The number of threads used to create the batches.')
 tf.app.flags.DEFINE_integer(
     'num_cpu_threads', 0,
@@ -120,7 +120,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'dataset_split_name', 'train', 'The name of the train/test split.')
 tf.app.flags.DEFINE_string(
-    'data_dir', '../PASCAL/tfrecords/VOC0712', 'The directory where the dataset files are stored.')
+    'data_dir', '../PASCAL/VOC_TF/VOC0712TF/', 'The directory where the dataset files are stored.')
 tf.app.flags.DEFINE_integer(
     'labels_offset', 0,
     'An offset for the labels in the dataset. This flag is primarily used to '
@@ -132,7 +132,7 @@ tf.app.flags.DEFINE_string(
     'preprocessing_name', None, 'The name of the preprocessing to use. If left '
     'as `None`, then the model_name flag is used.')
 tf.app.flags.DEFINE_integer(
-    'batch_size', 64, 'The number of samples in each batch.')
+    'batch_size', 32, 'The number of samples in each batch.')
 tf.app.flags.DEFINE_integer(
     'train_image_size', None, 'Train image size')
 tf.app.flags.DEFINE_integer('max_number_of_steps', None,
@@ -147,7 +147,7 @@ tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', 'vgg_16',#None,
     'Model scope in the checkpoint. None if the same as the trained model.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module, ron_320_vgg/conv6, ron_320_vgg/conv7',#None,
+    'checkpoint_exclude_scopes', 'ron_320_vgg/reverse_module',#None,
     'Comma-separated list of scopes of variables to exclude when restoring '
     'from a checkpoint.')
 tf.app.flags.DEFINE_string(
@@ -370,8 +370,7 @@ def main(_):
         # glocalisations is our regression object
         # gclasses is the ground_trutuh label
         # gscores is the the jaccard score with ground_truth
-        gclasses, glocalisations, gscores = \
-            ron_net.bboxes_encode(glabels, gbboxes, ron_anchors, positive_threshold=FLAGS.match_threshold, ignore_threshold=FLAGS.neg_threshold)
+        gclasses, glocalisations, gscores = ron_net.bboxes_encode(glabels, gbboxes, ron_anchors, positive_threshold=FLAGS.match_threshold, ignore_threshold=FLAGS.neg_threshold)
 
         # each size of the batch elements
         # include one image, three others(gclasses, glocalisations, gscores)
@@ -382,7 +381,8 @@ def main(_):
             tf_utils.reshape_list([image, gclasses, glocalisations, gscores]),
             batch_size=FLAGS.batch_size,
             num_threads=FLAGS.num_preprocessing_threads,
-            capacity=120 * FLAGS.batch_size)
+            capacity=120 * FLAGS.batch_size,
+            shared_name=None)
         b_image, b_gclasses, b_glocalisations, b_gscores = tf_utils.reshape_list(r, batch_shape)
         return b_image, {'b_gclasses':b_gclasses, 'b_glocalisations':b_glocalisations, 'b_gscores':b_gscores}
 
@@ -392,6 +392,7 @@ def main(_):
                     'global_step': 'global_step_to_log'}
 
     logging_hook = tf.train.LoggingTensorHook(tensors=tensors_to_log, every_n_iter=FLAGS.log_every_n_steps)
+    #with tf.contrib.tfprof.ProfileContext('./train_dir') as pctx:
     ron_detector.train(input_fn=train_input_fn, hooks=[logging_hook], max_steps=FLAGS.max_number_of_steps)
 
 if __name__ == '__main__':

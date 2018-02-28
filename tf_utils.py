@@ -217,6 +217,7 @@ def get_init_fn(flags, extra_path):
                 break
         if not excluded:
             variables_to_restore.append(var)
+
     # Change model scope if necessary.
     if flags.checkpoint_model_scope is not None:
         variables_to_restore = \
@@ -224,13 +225,19 @@ def get_init_fn(flags, extra_path):
                                  flags.checkpoint_model_scope): var
              for var in variables_to_restore}
 
-
+    print(variables_to_restore)
     if tf.gfile.IsDirectory(flags_checkpoint_path):
         checkpoint_path = tf.train.latest_checkpoint(flags_checkpoint_path)
     else:
         checkpoint_path = flags_checkpoint_path
     tf.logging.info('Fine-tuning from %s. Ignoring missing vars: %s' % (checkpoint_path, flags.ignore_missing_vars))
 
+    # from tensorflow.core.protobuf import saver_pb2
+    # saver = tf.train.Saver(variables_to_restore, write_version=saver_pb2.SaverDef.V1,reshape=False)
+
+    # def callback(session):
+    #     saver.restore(session, checkpoint_path)
+    # return callback
     return slim.assign_from_checkpoint_fn(
         checkpoint_path,
         variables_to_restore,

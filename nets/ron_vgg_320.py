@@ -388,7 +388,6 @@ def reverse_connection_module_with_pred(left_input, right_input, num_classes, nu
 
   return ref_map, objectness_logits, pred_cls_module(ref_map, var_scope, num_anchors, num_classes), reg_bbox_module(ref_map, var_scope, num_anchors)
 
-
 def ron_net(inputs,
             num_classes=RONNet.default_params.num_classes,
             feat_layers=RONNet.default_params.feat_layers,
@@ -429,13 +428,86 @@ def ron_net(inputs,
         end_points['block5'] = net
         # different betweent SSD here
         net = slim.max_pool2d(net, [2, 2], scope='pool5')
-
         # Additional RON blocks.
         # Block 6
-        net = slim.conv2d(net, 4096, [7, 7], scope='conv6')
+        net = slim.conv2d(net, 4096, [7, 7], scope='fc6')
         end_points['block6'] = net
+        net = slim.dropout(net, dropout_keep_prob, is_training=is_training, scope='dropout6')
         # Block 7: 1x1 conv, no padding.
-        net = slim.conv2d(net, 4096, [1, 1], scope='conv7')
+        net = slim.conv2d(net, 4096, [1, 1], scope='fc7')
+        end_points['block7'] = net
+
+        # Prediction and localisations layers.
+        predictions = []
+        logits = []
+        localisations = []
+        objness_pred = []
+        objness_logits = []
+
+        # last_refmap = slim.conv2d(net, 512, [3, 3], scope='conv7_refmap')
+        # end_points['block7_refmap'] = last_refmap
+        cur_ref_map = None
+        for i, layer in enumerate(feat_layers):
+            with tf.variable_scope('reverse_module'):
+                #print(tfe.get_shape(end_points[layer], 4))
+                cur_ref_map, objness, cls_pred, bbox_reg = reverse_connection_module_with_pred(end_points[layer], cur_ref_map, num_classes,\
+                                              len(anchor_sizes[i]) * len(anchor_ratios[i]), var_scope = layer + '_reverse')
+                predictions.append(prediction_fn(cls_pred))
+                logits.append(cls_pred)
+                obj_pred_neg_pos = prediction_fn(objness)
+                #objness_pred.append(tf.ones_like(tf.slice(obj_pred_neg_pos, [0, 0,0,0,1], [-1, -1,-1,-1,1])))
+                objness_pred.append(tf.slice(obj_pred_neg_pos, [0, 0, 0, 0, 1], [-1, -1, -1, -1, 1]))
+                objness_logits.append(objness)
+                localisations.append(bbox_reg)
+
+        return predictions, logits, objness_pred, objness_logits, localisations, end_points
+
+def ron_net_reducedfc(inputs,
+            num_classes=RONNet.default_params.num_classes,
+            feat_layers=RONNet.default_params.feat_layers,
+            anchor_sizes=RONNet.default_params.anchor_sizes,
+            anchor_ratios=RONNet.default_params.anchor_ratios,
+            is_training=True,
+            dropout_keep_prob=0.5,
+            prediction_fn=slim.softmax,
+            reuse=None,
+            scope='ron_320_vgg'):
+    """RON net definition.
+    """
+    # if data_format == 'NCHW':
+    #     inputs = tf.transpose(inputs, perm=(0, 3, 1, 2))
+
+    # End_points collect relevant activations for external use.
+    end_points = {}
+    with tf.variable_scope(scope, 'ron_320_vgg', [inputs], reuse=reuse):
+
+        # Original VGG-16 blocks.
+        net = slim.repeat(inputs, 2, slim.conv2d, 64, [3, 3], scope='conv1')
+        end_points['block1'] = net
+        net = slim.max_pool2d(net, [2, 2], scope='pool1')
+        # Block 2.
+        net = slim.repeat(net, 2, slim.conv2d, 128, [3, 3], scope='conv2')
+        end_points['block2'] = net
+        net = slim.max_pool2d(net, [2, 2], scope='pool2')
+        # Block 3.
+        net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3], scope='conv3')
+        end_points['block3'] = net
+        net = slim.max_pool2d(net, [2, 2], scope='pool3')
+        # Block 4.
+        net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], scope='conv4')
+        end_points['block4'] = net
+        net = slim.max_pool2d(net, [2, 2], scope='pool4')
+        # Block 5.
+        net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], scope='conv5')
+        end_points['block5'] = net
+        # different betweent SSD here
+        net = slim.max_pool2d(net, [2, 2], scope='pool5')
+        # Additional RON blocks.
+        # Block 6
+         # Use conv2d instead of fully_connected layers.
+        net = slim.conv2d(net, 1024, [3, 3], stride=1, rate=3, padding='SAME', scope='fc6')
+        end_points['block6'] = net
+        net = slim.conv2d(net, 1024, [1, 1], stride=1, rate=1, padding='SAME', scope='fc7')
         end_points['block7'] = net
 
         # Prediction and localisations layers.
