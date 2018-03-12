@@ -20,10 +20,16 @@ import six
 import time
 
 import numpy as np
+import os
 import tensorflow as tf
 import tf_extended as tfe
 import tf_utils
 from tensorflow.python.framework import ops
+
+import draw_toolbox
+
+from scipy.misc import imread, imsave, imshow, imresize
+
 
 from datasets import dataset_factory
 from nets import nets_factory
@@ -42,16 +48,29 @@ DATA_FORMAT = 'NHWC'
 # =========================================================================== #
 # SSD evaluation Flags.
 # =========================================================================== #
+# tf.app.flags.DEFINE_float(
+#     'select_threshold', 0.75, 'Selection threshold.')
+# tf.app.flags.DEFINE_float(
+#     'objectness_thres', 0.95, 'threshold for the objectness to indicate the exist of object in that location.')
+# tf.app.flags.DEFINE_integer(
+#     'select_top_k', 100, 'Select top-k detected bounding boxes.')
+# tf.app.flags.DEFINE_integer(
+#     'keep_top_k', 10, 'Keep top-k detected objects.')
+# tf.app.flags.DEFINE_float(
+#     'nms_threshold', 0.4, 'Non-Maximum Selection threshold.')
+# tf.app.flags.DEFINE_float(
+#     'match_threshold', 0.5, 'Matching threshold with groundtruth objects.')
+
 tf.app.flags.DEFINE_float(
-    'select_threshold', 0.1, 'Selection threshold.')
+    'select_threshold', 0.2, 'Selection threshold.')
 tf.app.flags.DEFINE_float(
     'objectness_thres', 0.9, 'threshold for the objectness to indicate the exist of object in that location.')
 tf.app.flags.DEFINE_integer(
-    'select_top_k', 400, 'Select top-k detected bounding boxes.')
+    'select_top_k', 200, 'Select top-k detected bounding boxes.')
 tf.app.flags.DEFINE_integer(
-    'keep_top_k', 200, 'Keep top-k detected objects.')
+    'keep_top_k', 100, 'Keep top-k detected objects.')
 tf.app.flags.DEFINE_float(
-    'nms_threshold', 0.45, 'Non-Maximum Selection threshold.')
+    'nms_threshold', 0.4, 'Non-Maximum Selection threshold.')
 tf.app.flags.DEFINE_float(
     'match_threshold', 0.5, 'Matching threshold with groundtruth objects.')
 
@@ -81,7 +100,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'master', '', 'The address of the TensorFlow master to use.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', './model/model.ckpt-115223',
+    'checkpoint_path', './model/model.ckpt-124042',
     'The directory where the model was written to or an absolute path to a '
     'checkpoint file.')
 tf.app.flags.DEFINE_string(
@@ -106,6 +125,15 @@ tf.app.flags.DEFINE_float(
 
 FLAGS = tf.app.flags.FLAGS
 
+def save_image_with_bbox(image, labels_, scores_, bboxes_):
+    if not hasattr(save_image_with_bbox, "counter"):
+        save_image_with_bbox.counter = 0  # it doesn't exist yet, so initialize it
+    save_image_with_bbox.counter += 1
+
+    img_to_draw = np.copy(image)#common_preprocessing.np_image_unwhitened(image))
+    img_to_draw = draw_toolbox.bboxes_draw_on_img(img_to_draw, labels_, scores_, bboxes_, thickness=2)
+    imsave(os.path.join('./Debug', '{}.jpg').format(save_image_with_bbox.counter), img_to_draw)
+    return save_image_with_bbox.counter
 
 def main(_):
     if not FLAGS.dataset_dir:
@@ -142,14 +170,14 @@ def main(_):
                     common_queue_min=FLAGS.batch_size,
                     shuffle=False)
             # Get for SSD network: image, labels, bboxes.
-            [image, shape, glabels, gbboxes, gdifficults] = provider.get(['image', 'shape',
+            [image_, shape, glabels, gbboxes, gdifficults] = provider.get(['image', 'shape',
                                                          'object/label',
                                                          'object/bbox',
                                                          'object/difficult'])
 
             # Pre-processing image, labels and bboxes.
             image, glabels, gbboxes, gbbox_img = \
-                image_preprocessing_fn(image, glabels, gbboxes,
+                image_preprocessing_fn(image_, glabels, gbboxes,
                                        out_shape=ron_shape,
                                        data_format=DATA_FORMAT,
                                        difficults=None)
@@ -175,7 +203,8 @@ def main(_):
         # =================================================================== #
         dict_metrics = {}
         arg_scope = ron_net.arg_scope(weight_decay=FLAGS.weight_decay,
-                                          data_format=DATA_FORMAT)
+                                        is_training=False,
+                                        data_format=DATA_FORMAT)
 
         with slim.arg_scope(arg_scope):
             predictions, logits, objness_pred, objness_logits, localisations, end_points = \
@@ -203,14 +232,26 @@ def main(_):
                 ron_net.detected_bboxes(filtered_predictions, localisations,
                                         select_threshold=FLAGS.select_threshold,
                                         nms_threshold=FLAGS.nms_threshold,
-                                        clipping_bbox=None,
+                                        clipping_bbox=[0., 0., 1., 1.],
                                         top_k=FLAGS.select_top_k,
                                         keep_top_k=FLAGS.keep_top_k)
-            # Compute TP and FP statistics.
-            num_gbboxes, tp, fp, rscores = \
-                tfe.bboxes_matching_batch(rscores.keys(), rscores, rbboxes,
-                                          b_glabels, b_gbboxes, b_gdifficults,
-                                          matching_threshold=0.5)
+            labels_list = []
+            for k, v in rscores.items():
+                labels_list.append(tf.ones_like(v, tf.int32) * k)
+            save_image_op = tf.py_func(save_image_with_bbox,
+                                        [tf.cast(tf.squeeze(b_image, 0), tf.float32),
+                                        tf.squeeze(tf.concat(labels_list, axis=1), 0),
+                                        #tf.convert_to_tensor(list(rscores.keys()), dtype=tf.int64),
+                                        tf.squeeze(tf.concat(list(rscores.values()), axis=1), 0),
+                                        tf.squeeze(tf.concat(list(rbboxes.values()), axis=1), 0)],
+                                        tf.int64, stateful=True)
+            with tf.control_dependencies([save_image_op]):
+                # Compute TP and FP statistics.
+                num_gbboxes, tp, fp, rscores = \
+                    tfe.bboxes_matching_batch(rscores.keys(), rscores, rbboxes,
+                                              b_glabels, b_gbboxes, b_gdifficults,
+                                              matching_threshold=0.5)
+
 
 
         # =================================================================== #

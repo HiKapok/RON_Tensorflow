@@ -144,7 +144,7 @@ tf.app.flags.DEFINE_string(
     'preprocessing_name', None, 'The name of the preprocessing to use. If left '
     'as `None`, then the model_name flag is used.')
 tf.app.flags.DEFINE_integer(
-    'batch_size', 24, 'The number of samples in each batch.')
+    'batch_size', 18, 'The number of samples in each batch.')
 tf.app.flags.DEFINE_integer(
     'train_image_size', None, 'Train image size')
 tf.app.flags.DEFINE_integer('max_number_of_steps', None,

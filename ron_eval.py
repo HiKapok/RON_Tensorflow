@@ -93,7 +93,7 @@ tf.app.flags.DEFINE_integer(
 # Fine-Tuning Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', './model/model.ckpt-115223', #None, #'./checkpoints/ssd_300_vgg.ckpt',
+    'checkpoint_path', './model/model.ckpt-95763', #None, #'./checkpoints/ssd_300_vgg.ckpt',
     'The path to a checkpoint from which to fine-tune.')
 tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', None,
@@ -143,7 +143,7 @@ def flaten_predict(predictions, objness_pred, localisations):
     bbox_mask = tf.logical_and(non_background_mask, tf.greater(total_objness, FLAGS.objectness_thres))
     return tf.boolean_mask(total_scores, bbox_mask), tf.boolean_mask(total_labels, bbox_mask), tf.boolean_mask(total_locations, bbox_mask)
 
-def tf_bboxes_nms(scores, labels, bboxes, nms_threshold = 0.5, keep_top_k = 200, mode = 'min', scope=None):
+def tf_bboxes_nms(scores, labels, bboxes, nms_threshold = 0.5, keep_top_k = 200, mode = 'union', scope=None):
     with tf.name_scope(scope, 'tf_bboxes_nms', [scores, labels, bboxes]):
         # get the cls_score for the most-likely class
         scores = tf.reduce_max(scores, -1)
@@ -459,7 +459,7 @@ def main(_):
         #image = tf.Print(image, [shape, glabels, gbboxes], message='after preprocess: ', summarize=20)
 
         # Construct RON network.
-        arg_scope = ron_net.arg_scope(data_format=DATA_FORMAT)
+        arg_scope = ron_net.arg_scope(is_training=False, data_format=DATA_FORMAT)
         with slim.arg_scope(arg_scope):
             predictions, _, objness_pred, _, localisations, _ = ron_net.net(tf.expand_dims(image, axis=0), is_training=False)
             bboxes = ron_net.bboxes_decode(localisations, ron_anchors)

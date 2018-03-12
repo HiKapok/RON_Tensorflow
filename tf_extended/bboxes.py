@@ -97,7 +97,9 @@ def bboxes_sort(scores, bboxes, top_k=400, scope=None):
                       swap_memory=False,
                       infer_shape=True)
         bboxes = r[0]
-        return scores, bboxes
+
+        return tfe_tensors.pad_axis(scores, 0, top_k, axis=1), tfe_tensors.pad_axis(bboxes, 0, top_k, axis=1)
+        #return scores, bboxes
 
 
 def bboxes_clip(bbox_ref, bboxes, scope=None):
@@ -168,8 +170,70 @@ def bboxes_resize(bbox_ref, bboxes, name=None):
         bboxes = bboxes / s
         return bboxes
 
+def bboxes_nms(scores, bboxes, nms_threshold = 0.5, keep_top_k = 200, mode = 'min', scope=None):
+    with tf.name_scope(scope, 'tf_bboxes_nms', [scores, bboxes]):
+        # get the cls_score for the most-likely class
+        num_anchors = tf.shape(scores)[0]
+        def nms_proc(scores, bboxes):
+            # sort all the bboxes
+            scores, idxes = tf.nn.top_k(scores, k = num_anchors, sorted = True)
+            bboxes = tf.gather(bboxes, idxes)
 
-def bboxes_nms(scores, bboxes, nms_threshold=0.5, keep_top_k=200, scope=None):
+            ymin = bboxes[:, 0]
+            xmin = bboxes[:, 1]
+            ymax = bboxes[:, 2]
+            xmax = bboxes[:, 3]
+
+            vol_anchors = (xmax - xmin) * (ymax - ymin)
+
+            nms_mask = tf.cast(tf.ones_like(scores, dtype=tf.int8), tf.bool)
+            keep_mask = tf.cast(tf.zeros_like(scores, dtype=tf.int8), tf.bool)
+
+            def safe_divide(numerator, denominator):
+                return tf.where(tf.greater(denominator, 0), tf.divide(numerator, denominator), tf.zeros_like(denominator))
+
+            def get_scores(bbox, nms_mask):
+                # the inner square
+                inner_ymin = tf.maximum(ymin, bbox[0])
+                inner_xmin = tf.maximum(xmin, bbox[1])
+                inner_ymax = tf.minimum(ymax, bbox[2])
+                inner_xmax = tf.minimum(xmax, bbox[3])
+                h = tf.maximum(inner_ymax - inner_ymin, 0.)
+                w = tf.maximum(inner_xmax - inner_xmin, 0.)
+                inner_vol = h * w
+                this_vol = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if mode == 'union':
+                    union_vol = vol_anchors - inner_vol  + this_vol
+                elif mode == 'min':
+                    union_vol = tf.minimum(vol_anchors, this_vol)
+                else:
+                    raise ValueError('unknown mode to use for nms.')
+                return safe_divide(inner_vol, union_vol) * tf.cast(nms_mask, tf.float32)
+
+            def condition(index, nms_mask, keep_mask):
+                return tf.logical_and(tf.reduce_sum(tf.cast(nms_mask, tf.int32)) > 0, tf.less(index, keep_top_k))
+
+            def body(index, nms_mask, keep_mask):
+                # at least one True in nms_mask
+                indices = tf.where(nms_mask)[0][0]
+                bbox = bboxes[indices]
+                this_mask = tf.one_hot(indices, num_anchors, on_value=False, off_value=True, dtype=tf.bool)
+                keep_mask = tf.logical_or(keep_mask, tf.logical_not(this_mask))
+                nms_mask = tf.logical_and(nms_mask, this_mask)
+
+                nms_scores = get_scores(bbox, nms_mask)
+
+                nms_mask = tf.logical_and(nms_mask, nms_scores < nms_threshold)
+                return [index+1, nms_mask, keep_mask]
+
+            index = 0
+            [index, nms_mask, keep_mask] = tf.while_loop(condition, body, [index, nms_mask, keep_mask])
+
+            return tfe_tensors.pad_axis(tf.boolean_mask(scores, keep_mask), 0, keep_top_k, axis=0), tfe_tensors.pad_axis(tf.boolean_mask(bboxes, keep_mask), 0, keep_top_k, axis=0)
+
+        return tf.cond(tf.less(num_anchors, 1), lambda: (scores, bboxes), lambda: nms_proc(scores, bboxes))
+
+def bboxes_nms1(scores, bboxes, nms_threshold=0.5, keep_top_k=200, scope=None):
     """Apply non-maximum selection to bounding boxes. In comparison to TF
     implementation, use classes information for matching.
     Should only be used on single-entries. Use batch version otherwise.

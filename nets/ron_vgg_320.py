@@ -59,6 +59,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import nn_ops
 
 import tf_extended as tfe
+from tf_extended import tensors as tfe_tensors
 from nets import custom_layers
 from nets import ssd_common
 
@@ -118,7 +119,7 @@ class RONNet(object):
         # anchor_ratios=[[1, 2, 3, 1./2, 1./3]],
         # anchor_steps=[64],
 
-        anchor_offset=16.,
+        anchor_offset=0.5,
         prior_scaling=[0.1, 0.1, 0.2, 0.2]
         )
 
@@ -152,10 +153,10 @@ class RONNet(object):
                     scope=scope)
         return r
 
-    def arg_scope(self, weight_decay=0.0005, data_format='NHWC'):
+    def arg_scope(self, weight_decay=0.0005, is_training=True, data_format='NHWC'):
         """Network arg_scope.
         """
-        return ron_arg_scope(weight_decay, data_format=data_format)
+        return ron_arg_scope(weight_decay, is_training=is_training, data_format=data_format)
 
     # ======================================================================= #
     def anchors(self, img_shape, dtype=np.float32):
@@ -192,7 +193,44 @@ class RONNet(object):
             feat_localizations, anchors,
             prior_scaling=self.params.prior_scaling,
             scope=scope)
+    def bboxes_filter_min(self, scores, bboxes, top_k, minsize=0.03, scope=None):
+        """Sort bounding boxes by decreasing order and keep only the top_k.
+        If inputs are dictionnaries, assume every key is a different class.
+        Assume a batch-type input.
 
+        Args:
+          scores: Batch x N Tensor/Dictionary containing float scores.
+          bboxes: Batch x N x 4 Tensor/Dictionary containing boxes coordinates.
+          top_k: Top_k boxes to keep.
+        Return:
+          scores, bboxes: Sorted Tensors/Dictionaries of shape Batch x Top_k x 1|4.
+        """
+        # Dictionaries as inputs.
+        if isinstance(scores, dict) or isinstance(bboxes, dict):
+            with tf.name_scope(scope, 'bboxes_sort_dict'):
+                d_scores = {}
+                d_bboxes = {}
+                for c in scores.keys():
+                    s, b = self.bboxes_filter_min(scores[c], bboxes[c], top_k, minsize=minsize)
+                    d_scores[c] = s
+                    d_bboxes[c] = b
+                return d_scores, d_bboxes
+
+        # Tensors inputs.
+        with tf.name_scope(scope, 'bboxes_filter_min', [scores, bboxes]):
+            scores, bboxes = tf.squeeze(scores, 0), tf.squeeze(bboxes, 0)
+            h = (bboxes[:, 2] - bboxes[:, 0])
+            w = (bboxes[:, 3] - bboxes[:, 1])
+            mask = tf.greater(w, minsize)
+            mask = tf.logical_and(mask, tf.greater(h, minsize))
+            # Boolean masking...
+            scores = tf.boolean_mask(scores, mask)
+            bboxes = tf.boolean_mask(bboxes, mask)
+
+            scores = tfe_tensors.pad_axis(scores, 0, top_k, axis=0)
+            bboxes = tfe_tensors.pad_axis(bboxes, 0, top_k, axis=0)
+
+            return tf.expand_dims(scores, axis = 0), tf.expand_dims(bboxes, axis = 0)
     def detected_bboxes(self, predictions, localisations,
                         select_threshold=None, nms_threshold=0.5,
                         clipping_bbox=None, top_k=400, keep_top_k=200):
@@ -203,6 +241,10 @@ class RONNet(object):
             ssd_common.tf_ssd_bboxes_select(predictions, localisations,
                                             select_threshold=select_threshold,
                                             num_classes=self.params.num_classes)
+
+        if clipping_bbox is not None:
+            rbboxes = tfe.bboxes_clip(clipping_bbox, rbboxes)
+        rscores, rbboxes = self.bboxes_filter_min(rscores, rbboxes, top_k)
         rscores, rbboxes = \
             tfe.bboxes_sort(rscores, rbboxes, top_k=top_k)
         # Apply NMS algorithm.
@@ -210,8 +252,7 @@ class RONNet(object):
             tfe.bboxes_nms_batch(rscores, rbboxes,
                                  nms_threshold=nms_threshold,
                                  keep_top_k=keep_top_k)
-        if clipping_bbox is not None:
-            rbboxes = tfe.bboxes_clip(clipping_bbox, rbboxes)
+
         return rscores, rbboxes
 
     def losses(self, logits, localisations, objness_logits, objness_pred,
@@ -246,7 +287,7 @@ def ron_anchor_one_layer(img_shape,
                          sizes,
                          ratios,
                          step,
-                         offset=16,
+                         offset=0.5,
                          dtype=np.float32):
     """Computer RON default anchor boxes for one feature layer.
 
@@ -269,8 +310,10 @@ def ron_anchor_one_layer(img_shape,
     # y = (y.astype(dtype) + offset) / feat_shape[0]
     # x = (x.astype(dtype) + offset) / feat_shape[1]
     y, x = np.mgrid[0:feat_shape[0], 0:feat_shape[1]]
-    y = (y.astype(dtype) * step + offset) / img_shape[0]
-    x = (x.astype(dtype) * step + offset) / img_shape[1]
+    y = ((y.astype(dtype) + offset) * step) / img_shape[0]
+    x = ((x.astype(dtype) + offset) * step) / img_shape[1]
+    # y = (y.astype(dtype) * step + 16.) / img_shape[0]
+    # x = (x.astype(dtype) * step + 16.) / img_shape[1]
 
     # Expand dims to support easy broadcasting.
     y = np.expand_dims(y, axis=-1)
@@ -295,7 +338,7 @@ def ron_anchors_all_layers(img_shape,
                            anchor_sizes,
                            anchor_ratios,
                            anchor_steps,
-                           offset=16.,
+                           offset=0.5,
                            dtype=np.float32):
     """Compute anchor boxes for all feature layers.
     """
@@ -538,7 +581,17 @@ def ron_net_reducedfc(inputs,
 ron_net.default_image_size = 320
 
 
-def ron_arg_scope(weight_decay=0.0005, data_format='NHWC'):
+def truncated_normal_001_initializer():
+  # pylint: disable=unused-argument
+  def _initializer(shape, dtype=tf.float32, partition_info=None):
+    """Initializer function."""
+    print(shape)
+    if not dtype.is_floating:
+      raise TypeError('Cannot create initializer for non-floating point type.')
+    return tf.truncated_normal(shape, 0.0, 0.01, dtype, seed=None)
+  return _initializer
+
+def ron_arg_scope(weight_decay=0.0005, is_training=True, data_format='NHWC'):
     """Defines the VGG arg scope.
 
     Args:
@@ -547,10 +600,14 @@ def ron_arg_scope(weight_decay=0.0005, data_format='NHWC'):
     Returns:
       An arg_scope.
     """
-    with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.fully_connected],
+    with slim.arg_scope([slim.conv2d_transpose, slim.fully_connected],
                         activation_fn=tf.nn.relu,
                         weights_regularizer=slim.l2_regularizer(weight_decay),
                         weights_initializer=tf.contrib.layers.xavier_initializer(),
+                        biases_initializer=tf.zeros_initializer()):
+      with slim.arg_scope([slim.conv2d], activation_fn=tf.nn.relu,
+                        weights_regularizer=slim.l2_regularizer(weight_decay),
+                        weights_initializer=truncated_normal_001_initializer(),
                         biases_initializer=tf.zeros_initializer()):
         with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.max_pool2d],
                             padding='SAME',
@@ -562,6 +619,7 @@ def ron_arg_scope(weight_decay=0.0005, data_format='NHWC'):
                             epsilon=1e-5,
                             scale=True,
                             fused=True,
+                            is_training = is_training,
                             data_format=data_format):
                 with slim.arg_scope([custom_layers.pad2d,
                                      custom_layers.l2_normalization,
