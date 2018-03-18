@@ -100,7 +100,7 @@ class RONNet(object):
         no_annotation_label=21,
         feat_layers=['block7','block6', 'block5', 'block4'],
         feat_shapes=[(5, 5), (10, 10), (20, 20), (40, 40)],
-        allowed_borders = [32, 16, 8, 4],
+        allowed_borders = [0, 0, 0, 0],
         anchor_sizes=[(224., 256.),
                       (160., 192.),
                       (96., 128.),
@@ -141,7 +141,7 @@ class RONNet(object):
             scope='ron_320_vgg'):
         """RON network definition.
         """
-        r = ron_net(inputs,
+        r = ron_net_reducedfc(inputs,
                     num_classes=self.params.num_classes,
                     feat_layers=self.params.feat_layers,
                     anchor_sizes=self.params.anchor_sizes,
@@ -458,6 +458,8 @@ def ron_net(inputs,
         net = slim.repeat(net, 2, slim.conv2d, 128, [3, 3], scope='conv2')
         end_points['block2'] = net
         net = slim.max_pool2d(net, [2, 2], scope='pool2')
+
+        #net = tf.stop_gradient(net)
         # Block 3.
         net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3], scope='conv3')
         end_points['block3'] = net
@@ -566,8 +568,7 @@ def ron_net_reducedfc(inputs,
         for i, layer in enumerate(feat_layers):
             with tf.variable_scope('reverse_module'):
                 #print(tfe.get_shape(end_points[layer], 4))
-                cur_ref_map, objness, cls_pred, bbox_reg = reverse_connection_module_with_pred(end_points[layer], cur_ref_map, num_classes,\
-                                              len(anchor_sizes[i]) * len(anchor_ratios[i]), var_scope = layer + '_reverse')
+                cur_ref_map, objness, cls_pred, bbox_reg = reverse_connection_module_with_pred(end_points[layer], cur_ref_map, num_classes, len(anchor_sizes[i]) * len(anchor_ratios[i]), var_scope = layer + '_reverse')
                 predictions.append(prediction_fn(cls_pred))
                 logits.append(cls_pred)
                 obj_pred_neg_pos = prediction_fn(objness)
@@ -585,7 +586,7 @@ def truncated_normal_001_initializer():
   # pylint: disable=unused-argument
   def _initializer(shape, dtype=tf.float32, partition_info=None):
     """Initializer function."""
-    print(shape)
+    #print(shape)
     if not dtype.is_floating:
       raise TypeError('Cannot create initializer for non-floating point type.')
     return tf.truncated_normal(shape, 0.0, 0.01, dtype, seed=None)
@@ -680,13 +681,17 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
 
         # raw mask for positive > 0.5, and for negetive < 0.3
         # each positive examples has one label
+        #gclasses = tf.Print(gclasses, [gclasses, tf.reduce_sum(tf.cast(tf.logical_and(gclasses > 0, tf.logical_not(gscores > 0.5)), dtype)) ], message='gclasses: ', summarize=500)
+
         positive_mask = gclasses > 0
+        #positive_mask = tf.Print(positive_mask, [positive_mask], message='positive_mask: ', summarize=500)
+
         fpositive_mask = tf.cast(positive_mask, dtype)
         n_positives = tf.reduce_sum(fpositive_mask)
         # negtive examples are those max_overlap is still lower than neg_threshold, note that some positive may also has lower jaccard
 
         #negtive_mask = tf.cast(tf.logical_not(positive_mask), dtype) * gscores < neg_threshold
-        negtive_mask = tf.logical_and(tf.logical_not(tf.logical_or(positive_mask, gclasses < 0)), gscores < neg_threshold)
+        negtive_mask = (gclasses == 0)
         #negtive_mask = tf.logical_and(gscores < neg_threshold, tf.logical_not(positive_mask))
         fnegtive_mask = tf.cast(negtive_mask, dtype)
         n_negtives = tf.reduce_sum(fnegtive_mask)
@@ -733,9 +738,9 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         total_examples_for_cls = tf.reduce_sum(tf.cast(final_cls_neg_mask_objness, dtype))
 
         # n_cls_neg_to_select = tf.Print(n_cls_neg_to_select, [n_cls_neg_to_select], message='n_cls_neg_to_select: ', summarize=20)
-        # n_cls_positives = tf.Print(n_cls_positives, [n_cls_positives], message='n_cls_positives: ', summarize=20)
+        #logits = tf.Print(logits, [n_cls_positives, tf.reduce_sum(tf.cast(tf.logical_and(cls_negtive_mask, rand_cls_neg_mask), dtype))], message='n_cls_positives: ', summarize=20)
         # n_neg_to_select = tf.Print(n_neg_to_select, [n_neg_to_select], message='n_neg_to_select: ', summarize=20)
-        # n_positives = tf.Print(n_positives, [n_positives], message='n_positives: ', summarize=20)
+        #logits = tf.Print(logits, [n_positives, tf.reduce_sum(tf.cast(tf.logical_and(negtive_mask, rand_neg_mask), dtype))], message='n_positives: ', summarize=20)
 
         # Add cross-entropy loss.
         with tf.name_scope('cross_entropy_pos'):
@@ -764,7 +769,8 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
             loss = custom_layers.modified_smooth_l1(localisations, tf.stop_gradient(glocalisations), sigma = 3.)
             #loss = custom_layers.abs_smooth(localisations - tf.stop_gradient(glocalisations))
 
-            loss = tf.cond(n_positives > 0., lambda: beta * n_positives / total_examples_for_objness * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(positive_mask))), lambda: 0.)
+            loss = tf.cond(n_cls_positives > 0., lambda: beta * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(cls_positive_mask))), lambda: 0.)
+            #loss = tf.cond(n_positives > 0., lambda: beta * n_positives / total_examples_for_objness * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(positive_mask))), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)
 

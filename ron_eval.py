@@ -93,7 +93,7 @@ tf.app.flags.DEFINE_integer(
 # Fine-Tuning Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', './model/model.ckpt-95763', #None, #'./checkpoints/ssd_300_vgg.ckpt',
+    'checkpoint_path', './model/model.ckpt-120055', #None, #'./checkpoints/ssd_300_vgg.ckpt',
     'The path to a checkpoint from which to fine-tune.')
 tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', None,

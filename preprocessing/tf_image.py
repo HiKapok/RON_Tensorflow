@@ -396,7 +396,7 @@ def ssd_random_sample_patch(image, labels, bboxes, name=None):
                                                                 back_prop=False,
                                                                 swap_memory=True)
 
-        return tf.cast([roi[0]*tf.cast(height, tf.float32), roi[1]*tf.cast(width, tf.float32), (roi[2]-roi[0])*tf.cast(height, tf.float32), (roi[3]-roi[1])*tf.cast(width, tf.float32)], tf.int32), mask_labels, mask_bboxes
+        return control_flow_ops.cond(tf.greater(tf.shape(mask_labels)[0], 0), lambda : (tf.cast([roi[0]*tf.cast(height, tf.float32), roi[1]*tf.cast(width, tf.float32), (roi[2]-roi[0])*tf.cast(height, tf.float32), (roi[3]-roi[1])*tf.cast(width, tf.float32)], tf.int32), mask_labels, mask_bboxes), lambda : (tf.cast([0, 0, height, width], tf.int32), labels, bboxes))
 
     def sample_patch(image, labels, bboxes, min_iou):
         if image.get_shape().ndims != 3:

@@ -19,7 +19,7 @@ update:
 - Add voc eval with debug
 - Add realtime eval, using class-wise bboxes-select and nms
 - Add support for training use *vgg16_reducedfc* model converted from pytorch, you can get from [here](https://drive.google.com/open?id=184srhbt8_uvLKeWW_Yo8Mc5wTyc0lJT7)
-- Other important fixes **[2018.03.07]**
-- Model-320 trained on VOC07+12 dataset now is available at [here](), reduced version need to be trained by yourself
+- Other important fixes **[2018.03.18]**
+- Model-320(reduced version) trained on VOC07+12 dataset now is available at [here](), the heavy one need to be trained by yourself
 
-Note: Model trained using the initial version of this code can only get to 0.45+mAP, clone the latest version will give you much better performance at 0.55mAP. Futher improvement is still going on.
+Note: Model trained using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance. Futher improvement is still going on.
