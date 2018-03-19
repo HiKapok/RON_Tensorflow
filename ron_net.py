@@ -44,9 +44,9 @@ DATA_FORMAT = 'NHWC' #'NCHW'
 # =========================================================================== #
 
 tf.app.flags.DEFINE_float(
-    'loss_alpha', 2./5, 'Alpha parameter in the loss function.')
+    'loss_alpha', 1./3, 'Alpha parameter in the loss function.')
 tf.app.flags.DEFINE_float(
-    'loss_beta', 2./5, 'Beta parameter in the loss function.')
+    'loss_beta', 1./3, 'Beta parameter in the loss function.')
 tf.app.flags.DEFINE_float(
     'negative_ratio', 3., 'Negative ratio in the loss function.')
 tf.app.flags.DEFINE_float(
@@ -154,7 +154,7 @@ tf.app.flags.DEFINE_integer('max_number_of_steps', None,
 # Fine-Tuning Flags.
 # =========================================================================== #
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', '../vgg_model/reduced/vgg16_reducedfc.ckpt',#None, #'../vgg_model/reduced/vgg16_reducedfc.ckpt'
+    'checkpoint_path', None,#None, #'../vgg_model/reduced/vgg16_reducedfc.ckpt'
     'The path to a checkpoint from which to fine-tune.')
 tf.app.flags.DEFINE_string(
     'checkpoint_model_scope', 'vgg_16',#None,
@@ -359,7 +359,7 @@ def main(_):
                 logdir=FLAGS.model_dir,
                 master='',
                 is_chief=True,
-                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_16.ckpt')),
+                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_model/vgg16_reducedfc.ckpt')),
                 summary_op=summary_op,
                 number_of_steps=FLAGS.max_number_of_steps,
                 log_every_n_steps=FLAGS.log_every_n_steps,

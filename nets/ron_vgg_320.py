@@ -120,7 +120,7 @@ class RONNet(object):
         # anchor_steps=[64],
 
         anchor_offset=0.5,
-        prior_scaling=[0.1, 0.1, 0.2, 0.2]
+        prior_scaling=[1., 1., 1., 1.]#[0.1, 0.1, 0.2, 0.2]
         )
 
     def __init__(self, params=None):
@@ -608,7 +608,7 @@ def ron_arg_scope(weight_decay=0.0005, is_training=True, data_format='NHWC'):
                         biases_initializer=tf.zeros_initializer()):
       with slim.arg_scope([slim.conv2d], activation_fn=tf.nn.relu,
                         weights_regularizer=slim.l2_regularizer(weight_decay),
-                        weights_initializer=truncated_normal_001_initializer(),
+                        weights_initializer=tf.contrib.layers.xavier_initializer(),#truncated_normal_001_initializer(),
                         biases_initializer=tf.zeros_initializer()):
         with slim.arg_scope([slim.conv2d, slim.conv2d_transpose, slim.max_pool2d],
                             padding='SAME',
@@ -691,7 +691,7 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
         # negtive examples are those max_overlap is still lower than neg_threshold, note that some positive may also has lower jaccard
 
         #negtive_mask = tf.cast(tf.logical_not(positive_mask), dtype) * gscores < neg_threshold
-        negtive_mask = (gclasses == 0)
+        negtive_mask = tf.equal(gclasses, 0) #(gclasses == 0)
         #negtive_mask = tf.logical_and(gscores < neg_threshold, tf.logical_not(positive_mask))
         fnegtive_mask = tf.cast(negtive_mask, dtype)
         n_negtives = tf.reduce_sum(fnegtive_mask)
@@ -769,7 +769,7 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
             loss = custom_layers.modified_smooth_l1(localisations, tf.stop_gradient(glocalisations), sigma = 3.)
             #loss = custom_layers.abs_smooth(localisations - tf.stop_gradient(glocalisations))
 
-            loss = tf.cond(n_cls_positives > 0., lambda: beta * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(cls_positive_mask))), lambda: 0.)
+            loss = tf.cond(n_cls_positives > 0., lambda: beta * n_cls_positives / total_examples_for_cls * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(cls_positive_mask))), lambda: 0.)
             #loss = tf.cond(n_positives > 0., lambda: beta * n_positives / total_examples_for_objness * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(positive_mask))), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)

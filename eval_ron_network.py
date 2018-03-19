@@ -62,9 +62,9 @@ DATA_FORMAT = 'NHWC'
 #     'match_threshold', 0.5, 'Matching threshold with groundtruth objects.')
 
 tf.app.flags.DEFINE_float(
-    'select_threshold', 0.51, 'Selection threshold.')
+    'select_threshold', 0.01, 'Selection threshold.')
 tf.app.flags.DEFINE_float(
-    'objectness_thres', 0.93, 'threshold for the objectness to indicate the exist of object in that location.')
+    'objectness_thres', 0.03, 'threshold for the objectness to indicate the exist of object in that location.')
 tf.app.flags.DEFINE_integer(
     'select_top_k', 200, 'Select top-k detected bounding boxes.')
 tf.app.flags.DEFINE_integer(
@@ -100,7 +100,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'master', '', 'The address of the TensorFlow master to use.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', './model/model.ckpt-60399',#118815
+    'checkpoint_path', './model/model.ckpt-122044',#118815
     'The directory where the model was written to or an absolute path to a '
     'checkpoint file.')
 tf.app.flags.DEFINE_string(

@@ -46,7 +46,7 @@ def iou_matrix(bboxes, gt_bboxes):
     return tf.where(tf.equal(inter_vol, 0.0),
                     tf.zeros_like(inter_vol), tf.truediv(inter_vol, union_vol))
 
-def do_dual_max_match(overlap_matrix, high_thres, low_thres, ignore_between = True, gt_max_first=False):
+def do_dual_max_match(overlap_matrix, high_thres, low_thres, ignore_between = True, gt_max_first=True):
     '''
     overlap_matrix: num_gt * num_anchors
     '''
@@ -67,7 +67,7 @@ def do_dual_max_match(overlap_matrix, high_thres, low_thres, ignore_between = Tr
     gt_to_anchors = tf.argmax(overlap_matrix, axis=1)
 
     if gt_max_first:
-        left_gt_to_anchors_mask = tf.one_hot(gt_to_anchors, tf.shape(overlap_matrix)[1], on_value=1, off_value=0, axis=1, dtype=tf.int64)
+        left_gt_to_anchors_mask = tf.one_hot(gt_to_anchors, tf.shape(overlap_matrix)[1], on_value=1, off_value=0, axis=1, dtype=tf.int32)
     else:
         left_gt_to_anchors_mask = tf.cast(tf.logical_and(tf.reduce_max(anchors_to_gt_mask, axis=1, keep_dims=True) < 1, tf.one_hot(gt_to_anchors, tf.shape(overlap_matrix)[1], on_value=True, off_value=False, axis=1, dtype=tf.bool)), tf.int64)
 
