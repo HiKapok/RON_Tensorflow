@@ -16,6 +16,12 @@
 import tensorflow as tf
 import os
 
+import numpy as np
+import tf_extended as tfe
+from tensorflow.python.framework import ops
+import draw_toolbox
+from scipy.misc import imread, imsave, imshow, imresize
+
 from tensorflow.python import debug as tf_debug
 from tensorflow.python.ops import control_flow_ops
 
@@ -46,7 +52,7 @@ DATA_FORMAT = 'NHWC' #'NCHW'
 tf.app.flags.DEFINE_float(
     'loss_alpha', 1./3, 'Alpha parameter in the loss function.')
 tf.app.flags.DEFINE_float(
-    'loss_beta', 1./3, 'Beta parameter in the loss function.')
+    'loss_beta', 1./5, 'Beta parameter in the loss function.')
 tf.app.flags.DEFINE_float(
     'negative_ratio', 3., 'Negative ratio in the loss function.')
 tf.app.flags.DEFINE_float(
@@ -173,6 +179,16 @@ tf.app.flags.DEFINE_boolean(
 
 FLAGS = tf.app.flags.FLAGS
 
+def save_image_with_bbox(image, labels_, scores_, bboxes_):
+    if not hasattr(save_image_with_bbox, "counter"):
+        save_image_with_bbox.counter = 0  # it doesn't exist yet, so initialize it
+    save_image_with_bbox.counter += 1
+
+    #print(labels_)
+    img_to_draw = np.copy(image)#common_preprocessing.np_image_unwhitened(image))
+    img_to_draw = draw_toolbox.bboxes_draw_on_img(img_to_draw, labels_, scores_, bboxes_, thickness=2)
+    imsave(os.path.join('./Debug', '{}.jpg').format(save_image_with_bbox.counter), img_to_draw)
+    return save_image_with_bbox.counter
 # =========================================================================== #
 # Main training routine.
 # =========================================================================== #
@@ -219,7 +235,16 @@ def main(_):
                                                          'object/label',
                                                          'object/bbox',
                                                          'object/difficult'])
-        glabels = tf.cast(isdifficult < tf.ones_like(isdifficult), glabels.dtype) * glabels
+
+        #glabels = tf.cast(isdifficult < tf.ones_like(isdifficult), glabels.dtype) * glabels
+
+        isdifficult_mask =tf.cond(tf.reduce_sum(tf.cast(tf.logical_not(tf.equal(tf.ones_like(isdifficult), isdifficult)), tf.float32)) < 1., lambda : tf.one_hot(0, tf.shape(isdifficult)[0], on_value=True, off_value=False, dtype=tf.bool), lambda : isdifficult < tf.ones_like(isdifficult))
+
+        glabels = tf.boolean_mask(glabels, isdifficult_mask)
+        gbboxes = tf.boolean_mask(gbboxes, isdifficult_mask)
+
+        #glabels = tf.Print(glabels, [glabels,isdifficult], message='glabels: ', summarize=200)
+
         #### DEBUG ####
         #image = tf.Print(image, [shape, glabels, gbboxes], message='before preprocess: ', summarize=20)
         # Select the preprocessing function.
@@ -235,20 +260,42 @@ def main(_):
         #### DEBUG ####
         #image = tf.Print(image, [shape, glabels, gbboxes], message='after preprocess: ', summarize=20)
 
-        #glabels = tf.Print(glabels, [glabels], message='glabels: ', summarize=20)
+        #glabels = tf.Print(glabels, [glabels,isdifficult], message='glabels: ', summarize=200)
 
+        # save_image_op = tf.py_func(save_image_with_bbox,
+        #                             [image,
+        #                             tf.reshape(tf.clip_by_value(glabels, 0, 22), [-1]),
+        #                             #tf.convert_to_tensor(list(rscores.keys()), dtype=tf.int64),
+        #                             tf.reshape(tf.ones_like(gbboxes), [-1]),
+        #                             tf.reshape(gbboxes, [-1, 4])],
+        #                             tf.int64, stateful=True)
 
         # Encode groundtruth labels and bboxes.
         # glocalisations is our regression object
         # gclasses is the ground_trutuh label
         # gscores is the the jaccard score with ground_truth
-        gclasses, glocalisations, gscores = \
+        gclasses, glocalisations, gscores, gbboxes = \
             ron_net.bboxes_encode(glabels, gbboxes, ron_anchors, positive_threshold=FLAGS.match_threshold, ignore_threshold=FLAGS.neg_threshold)
 
+        #gclasses[1] = tf.Print(gclasses[1], [gclasses[1]], message='gclasses[1]: ', summarize=200)
+        # save_image_op = tf.py_func(save_image_with_bbox,
+        #                             [image,
+        #                             tf.reshape(tf.clip_by_value(gclasses[3], 0, 22), [-1]),
+        #                             #tf.convert_to_tensor(list(rscores.keys()), dtype=tf.int64),
+        #                             tf.reshape(gscores[3], [-1]),
+        #                             tf.reshape(gbboxes[3], [-1, 4])],
+        #                             tf.int64, stateful=True)
+        # save_image_op = tf.py_func(save_image_with_bbox,
+        #                             [image,
+        #                             tf.clip_by_value(tf.concat([tf.reshape(_, [-1]) for _ in gclasses], axis=0), 0, 22),
+        #                             tf.concat([tf.reshape(_, [-1]) for _ in gscores], axis=0),
+        #                             tf.concat([tf.reshape(_, [-1, 4]) for _ in gbboxes], axis=0)],
+        #                             tf.int64, stateful=True)
         # each size of the batch elements
         # include one image, three others(gclasses, glocalisations, gscores)
         batch_shape = [1] + [len(ron_anchors)] * 3
 
+        #with tf.control_dependencies([save_image_op]):
         # Training batches and queue.
         r = tf.train.batch(
             tf_utils.reshape_list([image, gclasses, glocalisations, gscores]),
@@ -359,7 +406,7 @@ def main(_):
                 logdir=FLAGS.model_dir,
                 master='',
                 is_chief=True,
-                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_model/vgg16_reducedfc.ckpt')),
+                init_fn=tf_utils.get_init_fn(FLAGS, os.path.join(FLAGS.data_dir, 'vgg_model/vgg16_reducedfc.ckpt')),#'vgg_model/vgg16_reducedfc.ckpt'
                 summary_op=summary_op,
                 number_of_steps=FLAGS.max_number_of_steps,
                 log_every_n_steps=FLAGS.log_every_n_steps,

@@ -355,7 +355,10 @@ def main(_):
                                                          'object/label',
                                                          'object/bbox',
                                                          'object/difficult'])
-        glabels = tf.cast(isdifficult < tf.ones_like(isdifficult), glabels.dtype) * glabels
+        isdifficult_mask =tf.cond(tf.reduce_sum(tf.cast(tf.logical_not(tf.equal(tf.ones_like(isdifficult), isdifficult)), tf.float32)) < 1., lambda : tf.one_hot(0, tf.shape(isdifficult)[0], on_value=True, off_value=False, dtype=tf.bool), lambda : isdifficult < tf.ones_like(isdifficult))
+
+        glabels = tf.boolean_mask(glabels, isdifficult_mask)
+        gbboxes = tf.boolean_mask(gbboxes, isdifficult_mask)
         # Select the preprocessing function.
         preprocessing_name = FLAGS.preprocessing_name or FLAGS.model_name
         image_preprocessing_fn = preprocessing_factory.get_preprocessing(

@@ -100,7 +100,7 @@ class RONNet(object):
         no_annotation_label=21,
         feat_layers=['block7','block6', 'block5', 'block4'],
         feat_shapes=[(5, 5), (10, 10), (20, 20), (40, 40)],
-        allowed_borders = [0, 0, 0, 0],
+        allowed_borders = [32, 16, 8, 4],
         anchor_sizes=[(224., 256.),
                       (160., 192.),
                       (96., 128.),
@@ -120,7 +120,7 @@ class RONNet(object):
         # anchor_steps=[64],
 
         anchor_offset=0.5,
-        prior_scaling=[1., 1., 1., 1.]#[0.1, 0.1, 0.2, 0.2]
+        prior_scaling=[0.1, 0.1, 0.2, 0.2]#[1., 1., 1., 1.]#
         )
 
     def __init__(self, params=None):
@@ -477,7 +477,7 @@ def ron_net(inputs,
         # Block 6
         net = slim.conv2d(net, 4096, [7, 7], scope='fc6')
         end_points['block6'] = net
-        net = slim.dropout(net, dropout_keep_prob, is_training=is_training, scope='dropout6')
+        #net = slim.dropout(net, dropout_keep_prob, is_training=is_training, scope='dropout6')
         # Block 7: 1x1 conv, no padding.
         net = slim.conv2d(net, 4096, [1, 1], scope='fc7')
         end_points['block7'] = net
@@ -769,7 +769,7 @@ def ron_losses(logits, localisations, objness_logits, objness_pred,
             loss = custom_layers.modified_smooth_l1(localisations, tf.stop_gradient(glocalisations), sigma = 3.)
             #loss = custom_layers.abs_smooth(localisations - tf.stop_gradient(glocalisations))
 
-            loss = tf.cond(n_cls_positives > 0., lambda: beta * n_cls_positives / total_examples_for_cls * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(cls_positive_mask))), lambda: 0.)
+            loss = tf.cond(n_cls_positives > 0., lambda: beta * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(cls_positive_mask))), lambda: 0.)
             #loss = tf.cond(n_positives > 0., lambda: beta * n_positives / total_examples_for_objness * tf.reduce_mean(tf.boolean_mask(tf.reduce_sum(loss, axis=-1), tf.stop_gradient(positive_mask))), lambda: 0.)
             #loss = tf.reduce_mean(loss * weights)
             #loss = tf.reduce_sum(loss * weights)

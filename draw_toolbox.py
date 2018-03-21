@@ -76,6 +76,8 @@ def bboxes_draw_on_img(img, classes, scores, bboxes, thickness=2):
     line_type = 8
 
     for i in range(bboxes.shape[0]):
+        if classes[i] < 1: continue
+
         bbox = bboxes[i]
         color = colors_tableau[classes[i]]
         # Draw bounding box...

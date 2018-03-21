@@ -11,7 +11,7 @@ For more details, please refer to [README of SSD-Tensorflow](https://github.com/
 ##  ##
 update:
 
-- Add SSD preprocesing method using Tensorflow ops
+- Add SSD preprocesing method using Tensorflow ops [zero ground truth fixed]
 - Modify details of the network to match the original Caffe code
 - Add NMS using Tensorflow ops to support two mode
 - Fix most part of the matching strategy between ground truth and anchors
@@ -19,7 +19,10 @@ update:
 - Add voc eval with debug
 - Add realtime eval, using class-wise bboxes-select and nms
 - Add support for training use *vgg16_reducedfc* model converted from pytorch, you can get from [here](https://drive.google.com/open?id=184srhbt8_uvLKeWW_Yo8Mc5wTyc0lJT7)
-- Other important fixes **[2018.03.18]**
+- Other important fixes **[2018.03.21]**
+- Make all anchors on different layers be matched together, to avoid some suboptimal matching results
+- Refactor anchors matching pipeline
+- Fix attribute 'difficult' missing problem in the TFRecords dataset
 - Model-320(reduced version) trained on VOC07+12 dataset now is available at [here](), the heavy one need to be trained by yourself
 
 Note: Model trained using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance. Futher improvement is still going on.

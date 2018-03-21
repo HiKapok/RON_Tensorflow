@@ -345,7 +345,7 @@ def ron_preprocess_for_train(image, labels, bboxes,
                 lambda x, ordering: distort_color(x, ordering, fast_mode),
                 num_cases=4)
         tf_summary_image(dst_image, bboxes, 'image_color_distorted_4')
-
+        dst_image = random_sample_flip_resized_image
         # Rescale to VGG input scale.
         dst_image.set_shape([None, None, 3])
         image = dst_image * 255.
@@ -358,7 +358,7 @@ def ron_preprocess_for_train(image, labels, bboxes,
 def preprocess_for_eval(image, labels, bboxes,
                         out_shape=EVAL_SIZE, data_format='NHWC',
                         difficults=None, resize='WARP_RESIZE',
-                        scope='ssd_preprocessing_train'):
+                        scope='ssd_preprocessing_eval'):
     """Preprocess an image for evaluation.
 
     Args:

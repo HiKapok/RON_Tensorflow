@@ -131,6 +131,8 @@ def tf_ssd_bboxes_encode_layer(labels,
     feat_cx = (feat_xmax + feat_xmin) / 2.
     feat_h = feat_ymax - feat_ymin
     feat_w = feat_xmax - feat_xmin
+
+    bboxes = tf.stack([ymin_, xmin_, ymax_, xmax_], axis=-1)
     # Encode features.
     # the prior_scaling (in fact is 5 and 10) is use for balance the regression loss of center and with(or height)
     # (x-x_ref)/x_ref * 10 + log(w/w_ref) * 5
@@ -142,7 +144,7 @@ def tf_ssd_bboxes_encode_layer(labels,
     feat_localizations = tf.stack([feat_cx, feat_cy, feat_w, feat_h], axis=-1)
     # now feat_localizations is our regression object
 
-    return feat_labels * tf.cast(matched_gt_mask, tf.int64) + (-1 * tf.cast(matched_gt < -1, tf.int64)), tf.expand_dims(tf.reshape(tf.cast(matched_gt_mask, tf.float32), tf.shape(ymin_)), -1) * feat_localizations, feat_scores
+    return feat_labels * tf.cast(matched_gt_mask, tf.int64) + (-1 * tf.cast(matched_gt < -1, tf.int64)), tf.expand_dims(tf.reshape(tf.cast(matched_gt_mask, tf.float32), tf.shape(ymin_)), -1) * feat_localizations, feat_scores, bboxes
 
 # def tf_ssd_bboxes_encode_layer(labels,
 #                                bboxes,
@@ -362,17 +364,85 @@ def tf_ssd_bboxes_encode(labels,
         target_labels = []
         target_localizations = []
         target_scores = []
-        for i, anchors_layer in enumerate(anchors):
-            with tf.name_scope('bboxes_encode_block_%i' % i):
-                t_labels, t_loc, t_scores = \
-                    tf_ssd_bboxes_encode_layer(labels, bboxes, anchors_layer,
-                                               num_classes, img_shape, allowed_borders[i], no_annotation_label,
-                                               positive_threshold, ignore_threshold,
-                                               prior_scaling, dtype)
-                target_labels.append(t_labels)
-                target_localizations.append(t_loc)
-                target_scores.append(t_scores)
-        return target_labels, target_localizations, target_scores
+        target_bboxes = []
+
+        shape_recorder = []
+        full_shape_anchors = {}
+        with tf.name_scope('anchor_concat'):
+            for i, anchors_layer in enumerate(anchors):
+                yref, xref, href, wref = anchors_layer
+
+                ymin_ = yref - href / 2.
+                xmin_ = xref - wref / 2.
+                ymax_ = yref + href / 2.
+                xmax_ = xref + wref / 2.
+
+                shape_recorder.append(ymin_.shape)
+                full_shape_yxhw = [(ymin_ + ymax_)/2, (xmin_ + xmax_)/2, (ymax_ - ymin_), (xmax_ - xmin_)]
+
+                full_shape_anchors[i] = [np.reshape(_, (-1)) for _ in full_shape_yxhw]
+            #print(full_shape_anchors)
+            remap_anchors = list(zip(*full_shape_anchors.values()))
+
+            for i in range(len(full_shape_anchors)):
+                full_shape_anchors[i] = np.concatenate(remap_anchors[i], axis=0)
+                #print(full_shape_anchors[i].shape)
+            # print([_.shape for _ in remap_anchors[0]])
+            # print([_.shape for _ in remap_anchors[1]])
+            # print([_.shape for _ in remap_anchors[2]])
+            # print([_.shape for _ in remap_anchors[3]])
+            #print(shape_recorder)
+        len_recorder = [np.prod(_) for _ in shape_recorder]
+        #print(len_recorder)
+        #print(allowed_borders)
+        flaten_allowed_borders = []
+        for i, allowed_border in enumerate(allowed_borders):
+            flaten_allowed_borders.append([allowed_border]*len_recorder[i])
+        #print([len(_) for _ in flaten_allowed_borders])
+        flaten_allowed_borders = np.concatenate(flaten_allowed_borders, axis=0)
+
+        t_labels, t_loc, t_scores, t_bbox = tf_ssd_bboxes_encode_layer(labels, bboxes, list(full_shape_anchors.values()), num_classes, img_shape, flaten_allowed_borders, no_annotation_label, positive_threshold, ignore_threshold, prior_scaling, dtype)
+
+        reshaped_loc = []
+        for i, loc in enumerate(tf.split(t_loc, len_recorder)):
+            reshaped_loc.append(tf.reshape(loc, list(shape_recorder[i])+[-1]))
+        reshaped_bbox = []
+        for i, bbox in enumerate(tf.split(t_bbox, len_recorder)):
+            reshaped_bbox.append(tf.reshape(bbox, list(shape_recorder[i])+[-1]))
+        #print(reshaped_loc)
+        #print(reshaped_bbox)
+        return tf.split(t_labels, len_recorder), reshaped_loc, tf.split(t_scores, len_recorder), reshaped_bbox
+    # with tf.name_scope(scope):
+    #     target_labels = []
+    #     target_localizations = []
+    #     target_scores = []
+    #     target_bboxes = []
+    #     for i, anchors_layer in enumerate(anchors):
+    #         with tf.name_scope('bboxes_encode_block_%i' % i):
+
+    #             yref, xref, href, wref = anchors_layer
+
+    #             ymin_ = yref - href / 2.
+    #             xmin_ = xref - wref / 2.
+    #             ymax_ = yref + href / 2.
+    #             xmax_ = xref + wref / 2.
+
+    #             yref_, xref_, href_, wref_ = (ymin_ + ymax_)/2, (xmin_ + xmax_)/2, (ymax_ - ymin_), (xmax_ - xmin_)
+    #             t_labels, t_loc, t_scores, t_bbox = \
+    #                 tf_ssd_bboxes_encode_layer(labels, bboxes, anchors_layer,
+    #                                            num_classes, img_shape, allowed_borders[i], no_annotation_label,
+    #                                            positive_threshold, ignore_threshold,
+    #                                            prior_scaling, dtype)
+    #             print('anchors_layer:', [yref_.shape, xref_.shape, href_.shape, wref_.shape])
+    #             print('t_labels:', t_labels)
+    #             print('t_loc:', t_loc)
+    #             print('t_scores:', t_scores)
+    #             print('t_bbox:', t_bbox)
+    #             target_labels.append(t_labels)
+    #             target_localizations.append(t_loc)
+    #             target_scores.append(t_scores)
+    #             target_bboxes.append(t_bbox)
+    #     return target_labels, target_localizations, target_scores, target_bboxes
 
 
 def tf_ssd_bboxes_decode_layer(feat_localizations,
