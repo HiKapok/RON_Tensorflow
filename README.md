@@ -6,7 +6,7 @@ This repository contains code of the re-implement of RON following the above pap
 
 The code is modified from [SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow). You can use the code to train/evaluate your network for object detection task. 
 
-For more details, please refer to [README of SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow/blob/master/README.md).
+For more details (including dataset prepare), please refer to [README of SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow/blob/master/README.md).
 
 ##  ##
 update:
@@ -23,6 +23,13 @@ update:
 - Make all anchors on different layers be matched together, to avoid some suboptimal matching results
 - Refactor anchors matching pipeline
 - Fix attribute 'difficult' missing problem in the TFRecords dataset
-- Model-320(reduced version) trained on VOC07+12 dataset now is available at [here](), the heavy one need to be trained by yourself
+- Model-320 (reduced version) trained on VOC07+12 dataset now is available at [here](https://drive.google.com/open?id=1rWONPxt9sBby2RxK2JMZgdRamrhRic3v), the heavier one needs to be trained by yourself(may I will also update a trained model later)
 
-Note: Model trained using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance. Futher improvement is still going on.
+Note: Model trained (07+12 VOC-train and test on VOC07-test) using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance at 0.7+mAP(needs ~120k steps). Futher improvement is still going on.
+
+Here are some demo result images of reduced-version RON detector trained using this code:
+
+![](demo/1.jpg "Detection Example 1")
+![](demo/2.jpg "Detection Example 2")
+![](demo/3.jpg "Detection Example 3")
+![](demo/4.jpg "Detection Example 4")

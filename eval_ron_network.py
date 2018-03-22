@@ -100,7 +100,7 @@ tf.app.flags.DEFINE_integer(
 tf.app.flags.DEFINE_string(
     'master', '', 'The address of the TensorFlow master to use.')
 tf.app.flags.DEFINE_string(
-    'checkpoint_path', './model/model.ckpt-121551',#118815
+    'checkpoint_path', './model/model.ckpt-109176',#118815
     'The directory where the model was written to or an absolute path to a '
     'checkpoint file.')
 tf.app.flags.DEFINE_string(
@@ -182,7 +182,7 @@ def main(_):
                                        difficults=None)
 
             # Encode groundtruth labels and bboxes.
-            gclasses, glocalisations, gscores = \
+            gclasses, glocalisations, gscores, _ = \
                 ron_net.bboxes_encode(glabels, gbboxes, ron_anchors)
             batch_shape = [1] * 5 + [len(ron_anchors)] * 3
 
