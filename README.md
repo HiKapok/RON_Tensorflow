@@ -9,7 +9,7 @@ The code is modified from [SSD-Tensorflow](https://github.com/balancap/SSD-Tenso
 For more details (including dataset prepare), please refer to [README of SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow/blob/master/README.md).
 
 ##  ##
-update:
+Update:
 
 - Add SSD preprocesing method using Tensorflow ops [zero ground truth fixed]
 - Modify details of the network to match the original Caffe code
@@ -25,9 +25,16 @@ update:
 - Fix attribute 'difficult' missing problem in the TFRecords dataset
 - Model-320 (reduced version) trained on VOC07+12 dataset now is available at [here](https://drive.google.com/open?id=1rWONPxt9sBby2RxK2JMZgdRamrhRic3v), the heavier one needs to be trained by yourself(may I will also update a trained model later)
 
-Note: Model trained (07+12 VOC-train and test on VOC07-test) using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance at 0.7+mAP(needs ~120k steps). Futher improvement is still going on.
+Last Update:
 
-Here are some demo result images of reduced-version RON detector trained using this code:
+- Maybe the code here is one of the few Tensorflow detection pipelines in open-source that could be trained to get 0.7+mAP(not using weights converted from other framework), except the official object-detection API.
+- You can use these code snippets for your own project
+- Model trained with heavier VGG-16 backbone got to 0.715mAP(0.734mAP using VOC12 evaluation alogorithm) at 120k steps on my side without other tricks.
+- You can try other matching threshold, different learning rate policy, more augumentation, other loss weights to get more improvement. I didn't try these but picked one simple setting.
+
+Note: Model trained (07+12 VOC-train and test on VOC07-test) using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance at 0.7+mAP(needs ~120k steps, training with ron_net.py and evaluation with eval_ron_network.py). Futher improvement is still going on.
+
+Here are some demo result images of reduced-version RON-320 detector(with a heavier vgg16-backbone 0.74mAP is reported in paper) trained using this code:
 
 ![](demo/1.jpg "Detection Example 1")
 ![](demo/2.jpg "Detection Example 2")
