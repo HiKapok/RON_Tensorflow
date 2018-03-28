@@ -31,6 +31,7 @@ Last Update:
 - You can use these code snippets for your own project
 - Model trained with heavier VGG-16 backbone got to 0.715mAP(0.734mAP using VOC12 evaluation alogorithm) at 120k steps on my side without other tricks.
 - You can try other matching threshold, different learning rate policy, more augumentation, other loss weights to get more improvement. I didn't try these but picked one simple setting.
+- If you would like to train using reduced_vgg from [here](https://drive.google.com/open?id=184srhbt8_uvLKeWW_Yo8Mc5wTyc0lJT7), please make sure that you swaped image channals from the default RGB order into BGR order, and the pixel value should in [-128, 128].
 
 Note: Model trained (07+12 VOC-train and test on VOC07-test) using the initial version of this code can only get to 0.45~0.55mAP, clone the latest version will give you much better performance at 0.7+mAP(needs ~120k steps, training with ron_net.py and evaluation with eval_ron_network.py). Futher improvement is still going on.
 
