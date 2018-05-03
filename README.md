@@ -8,6 +8,8 @@ The code is modified from [SSD-Tensorflow](https://github.com/balancap/SSD-Tenso
 
 For more details (including dataset prepare), please refer to [README of SSD-Tensorflow](https://github.com/balancap/SSD-Tensorflow/blob/master/README.md).
 
+**Update:** Recently, I have found some details of the detection pipeline maybe sub-optimal in this implementation. So if you would like use codes here for further research, I recommend you to refer to [this repo](https://github.com/HiKapok/SSD.TensorFlow) which includes many of my latest insights about detection.
+
 ##  ##
 Update:
 
