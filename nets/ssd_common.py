@@ -43,7 +43,7 @@ def iou_matrix(bboxes, gt_bboxes):
     inter_vol = intersection(bboxes, gt_bboxes)
     union_vol = areas(bboxes) + tf.transpose(areas(gt_bboxes), perm=[1, 0]) - inter_vol
 
-    return tf.where(tf.equal(inter_vol, 0.0),
+    return tf.where(tf.equal(union_vol, 0.0),
                     tf.zeros_like(inter_vol), tf.truediv(inter_vol, union_vol))
 
 def do_dual_max_match(overlap_matrix, high_thres, low_thres, ignore_between = True, gt_max_first=True):
@@ -53,7 +53,7 @@ def do_dual_max_match(overlap_matrix, high_thres, low_thres, ignore_between = Tr
     anchors_to_gt = tf.argmax(overlap_matrix, axis=0)
     match_values = tf.reduce_max(overlap_matrix, axis=0)
 
-    positive_mask = tf.greater_equal(match_values, high_thres)
+    positive_mask = tf.greater(match_values, high_thres)
     less_mask = tf.less(match_values, low_thres)
     between_mask = tf.logical_and(tf.less(match_values, high_thres), tf.greater_equal(match_values, low_thres))
     negative_mask = less_mask if ignore_between else between_mask
